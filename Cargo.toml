@@ -1,3 +1,5 @@
+cargo-features = ["strip"]
+
 [package]
 name = "i3status-rs"
 description = "A feature-rich and resource-friendly replacement for i3status, written in Rust."

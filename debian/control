@@ -1,0 +1,14 @@
+Source: i3status-rs
+Section: unknown
+Priority: optional
+Maintainer: Soumya Ranjan Patnaik <soumyaranjan1812@gmail.com>
+Build-Depends: cargo,pkg-config, build-essential, libsensors-dev, libpulse-dev, libdbus-1-dev, ca-certificates, gcc, libssl-dev, debhelper-compat (=12)
+Standards-Version: 4.5.0
+Homepage: <https://github.com/greshake/i3status-rust>
+
+Package: i3status-rs
+Architecture: any
+Multi-Arch: foreign
+Depends: ${misc:Depends}, ${shlibs:Depends} 
+Description: Very resourcefriendly and feature-rich 
+ replacement for i3status, written in pure Rust 
