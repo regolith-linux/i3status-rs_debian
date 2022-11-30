@@ -1,1 +1,2 @@
 target/release/i3status-rs /usr/bin/
+files/* /usr/share/i3status-rust
