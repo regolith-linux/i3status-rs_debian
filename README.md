@@ -1,60 +1,74 @@
 # i3status-rust
 
-![demo1](https://raw.githubusercontent.com/greshake/i3status-rust/master/img/example_bar.png)
+![demo1](https://raw.githubusercontent.com/greshake/i3status-rust/master/img/themes/solarized-dark.png)
 
-`i3status-rs` is a feature-rich and resource-friendly replacement for i3status, written in pure Rust. It provides a way to display "blocks" of system information (time, battery status, volume, etc) on the [i3](https://i3wm.org/) bar. It is also compatible with [sway](http://swaywm.org/).
-
-For a list of available blocks, see the [block documentation](https://github.com/greshake/i3status-rust/blob/master/doc/blocks.md). Further information can be found on the [Wiki](https://github.com/greshake/i3status-rust/wiki).
-
-## Requirements
-
-Most blocks assume you are running Linux, and some have their own system requirements; refer to the block documentation.
-
-Optional:
-
-* Font Awesome 4.x/5.x/6.x is required when using the icons config `name = "awesome"`, `name = "awesome5"` or `name = "awesome6"`. On Arch Linux version 4 and version 5 ['here'](https://aur.archlinux.org/pkgbase/font-awesome-5) are available in the [`AUR`](https://aur.archlinux.org/packages/ttf-font-awesome-4/), and version 6 [`here`](https://www.archlinux.org/packages/community/any/ttf-font-awesome/).
-* For icons config `name = material`, a patched version of Google's MaterialIcons-Regular.ttf is required which includes \u{0020} (space), sets a descent ands lower all glyphs to properly align. It can be found [here](https://gist.github.com/draoncc/3c20d8d4262892ccd2e227eefeafa8ef/raw/3e6e12c213fba1ec28aaa26430c3606874754c30/MaterialIcons-Regular-for-inline.ttf).
-* Powerline Fonts are required for all themes using the powerline arrow char.
+`i3status-rs` is a feature-rich and resource-friendly replacement for i3status, written in pure Rust. It provides a way to display "blocks" of system information (time, battery status, volume, etc) on bars that support the [i3bar protocol](https://i3wm.org/docs/i3bar-protocol.html).
 
 ## Getting Started
 
-Stable releases are packaged on some distributions:
+Install from one of the packages below:
 
-* On Arch Linux: `sudo pacman -Syu i3status-rust`. The latest development version can be installed from the [AUR](https://aur.archlinux.org/packages/i3status-rust-git).
+[![Packaging status](https://repology.org/badge/vertical-allrepos/i3status-rust.svg?columns=5)](https://repology.org/project/i3status-rust/versions)
 
-* On Fedora/CentOS: you can install the package from the [COPR](https://copr.fedorainfracloud.org/coprs/atim/i3status-rust/).
+* For Fedora/CentOS, you can install from the [COPR](https://copr.fedorainfracloud.org/coprs/atim/i3status-rust/).
 
-* On Void Linux: `xbps-install -S i3status-rust`
+* For NixOS, you can also use [Home Manager](https://github.com/nix-community/home-manager): `programs.i3status-rust.enable = true` [see available options](https://nix-community.github.io/home-manager/options.html#opt-programs.i3status-rust.enable)
 
-* On NixOS: `nix-env -iA nixos.i3status-rust`
+* **NOTE:** Installation via `cargo` is not supported.
 
-* On Gentoo, it is avaliable in the [GURU overlay](https://wiki.gentoo.org/wiki/Project:GURU): `emerge --ask x11-misc/i3status-rust`
-
-* With [Home Manager](https://github.com/nix-community/home-manager): `programs.i3status-rust.enable = true` [see available options](https://nix-community.github.io/home-manager/options.html#opt-programs.i3status-rust.enable)
-
-Otherwise refer to [manual install](https://github.com/greshake/i3status-rust/blob/master/doc/dev.md) docs
+Otherwise refer to [manual install](https://github.com/greshake/i3status-rust/blob/master/doc/manual_install.md) docs.
 
 ## Configuration
 
-After installing `i3status-rust`, you need to create a configuration file.
-Edit the [example configuration](https://raw.githubusercontent.com/greshake/i3status-rust/master/examples/config.toml) to your liking.
+After installing `i3status-rust`, edit the [example configuration](https://raw.githubusercontent.com/greshake/i3status-rust/master/examples/config.toml) to your liking.
 The default location is `$XDG_CONFIG_HOME/i3status-rust/config.toml`.
 
-There are some top-level configuration variables:
+There are some optional global configuration variables, defined either at the top-level or in a [TOML table](https://github.com/toml-lang/toml/blob/main/toml.md#table).
 
-Key | Description | Required | Default
-----|-------------|----------|--------
-`icons` | The icon set that should be used. Possible values are `none`, `awesome`, `awesome5`, `material` and `material-nf`. Check [themes.md](https://github.com/greshake/i3status-rust/blob/master/doc/themes.md) for more information | No | `none`
-`icons_format` | A string to customise the appearance of each icon. Can be used to edit icons' spacing or specify a font that will be applied only to icons via pango markup. For example, set it to `" <span font_family='NotoSans Nerd Font'>{icon}</span> "` to set font of the icons to be 'NotoSans Nerd Font' | No | `" {icon} "`
-`theme` | The predefined theme that should be used. You can also add your own overrides. Check [themes.md](https://github.com/greshake/i3status-rust/blob/master/doc/themes.md) for all available themes. | No | `plain`
-`scrolling` | The direction of scrolling, either `natural` or `reverse` | No | `reverse`
-`block` | All blocks that will exist in your i3bar. Check [blocks.md](https://github.com/greshake/i3status-rust/blob/master/doc/blocks.md) for all blocks and their parameters. | No | none
+`[icons]` table:
+Key | Description | Default
+----|-------------|----------
+`icons` | The [icon set](https://github.com/greshake/i3status-rust/blob/master/doc/themes.md#available-icon-sets) that should be used. | `"none"`
+`[icons.icons_overrides]` | Refer to `Themes and Icons` below. | None
 
-Refer to [formatting documentation](https://github.com/greshake/i3status-rust/blob/master/doc/blocks.md#formatting) to customize formatting strings' placeholders.
+`[theme]` table:
+Key | Description | Default
+----|-------------|----------
+`theme` | The [theme](https://github.com/greshake/i3status-rust/blob/master/doc/themes.md#available-themes) that should be used. | `"plain"`
+`[theme.theme_overrides]` | Refer to `Themes and Icons` below. | None
 
-## Integrate it into i3
+Global variables:
+Key | Description | Default
+----|-------------|----------
+`icons_format` | A string to customise the appearance of each icon. Can be used to edit icons' spacing or specify a font that will be applied only to icons via pango markup. For example, `" <span font_family='NotoSans Nerd Font'>{icon}</span> "`. | `" {icon} "`
+`invert_scrolling` | Whether to invert the direction of scrolling, useful for touchpad users. | `false`
+`error_format` | A string to customise how block errors are displayed. See below for available placeholders. | `"$short_error_message\|X"`
+`error_fullscreen_format` | A string to customise how block errors are displayed when clicked. See below for available placeholders. | `"$full_error_message"`
 
-Next, edit your i3 bar configuration to use `i3status-rust`. For example:
+Available `error_format` and `error_fullscreen_format` placeholders:
+
+Placeholder         | Value
+--------------------|------
+full_error_message  | The full error message
+short_error_message | The short error message, if available
+
+### Further documentation
+
+#### Latest release
+
+- [Blocks](https://docs.rs/i3status-rs/latest/i3status_rs/blocks/index.html)
+- [Formatting](https://docs.rs/i3status-rs/latest/i3status_rs/formatting/index.html)
+- [Themes and Icons](https://github.com/greshake/i3status-rust/blob/v0.30.7/doc/themes.md)
+
+#### Master
+
+- [Blocks](https://greshake.github.io/i3status-rust/i3status_rs/blocks/index.html)
+- [Formatting](https://greshake.github.io/i3status-rust/i3status_rs/formatting/index.html)
+- [Themes and Icons](https://github.com/greshake/i3status-rust/blob/master/doc/themes.md)
+
+## Integrate it into i3/sway
+
+Next, edit your bar configuration to use `i3status-rust`. For example:
 
 ```text
 bar {
@@ -80,7 +94,7 @@ $ fc-match FontAwesome
 fontawesome-webfont.ttf: "FontAwesome" "Regular"
 ```
 
-Note that the name of the Font Awesome font may have changed in version 5.  
+Note that the name of the Font Awesome font may have changed in version 5 or above.  
 You can use `fc-list` to see the names of your available Awesome Fonts.
 
 ```shell
@@ -96,19 +110,24 @@ See [#130](https://github.com/greshake/i3status-rust/issues/130) for further dis
 
 Finally, reload i3: `i3 reload`.
 
-## Signalling
+## Behavior
 
-i3bar has a "power savings" feature that pauses the bar via SIGSTOP when it is hidden or obscured by a fullscreen container. If this causes [issues](https://github.com/i3/i3/issues/4110) with your bar, try running i3status-rs with the `--never-pause` argument, which changes the signal sent by i3 from SIGSTOP to SIGCONT.
+Each block has a `State` that defines its colors: one of "Idle", "Info", "Good", "Warning", "Critical" or "Error". The state is determined by the logic in each block, for example, the Music block state is "Info" when there is an active player.
 
-Each block has a `signal` option (see [blocks.md](https://github.com/greshake/i3status-rust/blob/master/doc/blocks.md)). Alternatively, i3status-rs can be signalled to force an update of all blocks by sending it the SIGUSR1 signal.
+When the state is "Error", a short error will be displayed in the block. The full message can be toggled by clicking on the block (overrides any click actions defined in the config). The block will be restarted after `error_interval` has elapsed. 
 
-i3status-rs can also be restarted in place (useful for testing changes to the config file) by sending it the SIGUSR2 signal.
+i3bar has a "power savings" feature that pauses the bar via SIGSTOP when it is hidden or obscured by a fullscreen container. If this causes [issues](https://github.com/i3/i3/issues/4110) with your bar, try running i3status-rs with the `--never-stop` argument, which changes the signal sent by i3 from SIGSTOP to SIGCONT.
+
+In addition to the per-block `signal` config option, i3status-rs can be signalled to force an update of all blocks by sending it the SIGUSR1 signal. It can also be restarted in place (useful for testing changes to the config file) by sending it the SIGUSR2 signal.
+
+## Debugging
+
+Run `i3status-rust` in a terminal to check the JSON it is outputting.  
+In addition, some blocks have debug logs that can be enabled like so: `RUST_LOG=block=debug i3status-rs` where "block" is the block name.
 
 ## Contributing
 
 We welcome new contributors! Take a gander at [CONTRIBUTING.md](CONTRIBUTING.md).
-
-Note that new development is taking place in the `async` branch.
 
 ## License
 

@@ -1,309 +1,187 @@
-pub mod placeholder;
+//! # Formatting system
+//! Many blocks have a `format` configuration option, which allows to heavily customize the block's
+//! appearance. In short, each block with `format` option provides a set of values, which are
+//! displayed according to `format`. `format`'s value is just a text with embedded variables.
+//! Similarly to PHP and shell, variable name must start with a `$`:
+//! `this is a variable: -> $var <-`.
+//!
+//! Also, format strings can embed icons. For example, `^icon_ping` in `" ^icon_ping $ping "` gets
+//! substituted with a "ping" icon from your icon set. For a complete list of icons, see
+//! [this](https://github.com/greshake/i3status-rust/blob/master/doc/themes.md#available-icon-overrides).
+//!
+//! # Types
+//!
+//! The allowed types of variables are:
+//!
+//! Type                      | Default formatter
+//! --------------------------|------------------
+//! Text                      | `str`
+//! Number                    | `eng`
+//! [Flag](#how-to-use-flags) | N/A
+//!
+//! # Formatters
+//!
+//! A formatter is something that converts a value into a text. Because there are many ways to do
+//! this, a number of formatters is available. Formatter can be specified using the syntax similar
+//! to method calls in many programming languages: `<variable>.<formatter>(<args>)`. For example:
+//! `$title.str(min_w:10, max_w:20)`.
+//!
+//! ## `str` - Format text
+//!
+//! Argument               | Description                                       |Default value
+//! -----------------------|---------------------------------------------------|-------------
+//! `min_width` or `min_w` | if text is shorter it will be padded using spaces | `0`
+//! `max_width` or `max_w` | if text is longer it will be truncated            | Infinity
+//! `width` or `w`         | Text will be exactly this length by padding or truncating as needed | N/A
+//! `rot_interval`         | if text is longer than `max_width` it will be rotated every `rot_interval` seconds, if set | None
+//!
+//! Note: width just changes the values of both min_width and max_width to be the same. Use width
+//! if you want the values to be the same, or the other two otherwise. Don't mix width with
+//! min_width or max_width.
+//!
+//! ## `eng` - Format numbers using engineering notation
+//!
+//! Argument        | Description                                                                                      |Default value
+//! ----------------|--------------------------------------------------------------------------------------------------|-------------
+//! `width` or `w`  | the resulting text will be at least `width` characters long                                      | `2`
+//! `unit` or `u`   | some values have a [unit](unit::Unit), and it is possible to convert them by setting this option | N/A
+//! `hide_unit`     | hide the unit symbol                                                                             | `false`
+//! `unit_space`    | have a whitespace before unit symbol                                                             | `false`
+//! `prefix` or `p` | specify this argument if you want to set the minimal [SI prefix](prefix::Prefix)                 | N/A
+//! `hide_prefix`   | hide the prefix symbol                                                                           | `false`
+//! `prefix_space`  | have a whitespace before prefix symbol                                                           | `false`
+//! `force_prefix`  | force the prefix value instead of setting a "minimal prefix"                                     | `false`
+//! `pad_with`      | the character that is used to pad the number to be `width` long                                  | ` ` (a space)
+//!
+//! ## `bar` - Display numbers as progress bars
+//!
+//! Argument               | Description                                                                     |Default value
+//! -----------------------|---------------------------------------------------------------------------------|-------------------------
+//! `width` or `w`         | the width of the bar (in characters)                                            | `5` (`1` for `vertical`)
+//! `max_value`            | which value is treated as "full". For example, for battery level `100` is full. | `100`
+//! `vertical` or `v`      | whether to render the bar vertically or not                                     | `false`
+//!
+//! ## `pango-str` - Just display the text without pango markup escaping
+//!
+//! No arguments.
+//!
+//! ## `datetime` - Display datetime
+//!
+//! Argument               | Description                                                                                               |Default value
+//! -----------------------|-----------------------------------------------------------------------------------------------------------|-------------
+//! `format` or `f`        | [chrono docs](https://docs.rs/chrono/0.3.0/chrono/format/strftime/index.html#specifiers) for all options. | `'%a %d/%m %R'`
+//! `locale` or `l`        | Locale to apply when formatting the time                                                                  | System locale
+//!
+//! # Handling missing placeholders and incorrect types
+//!
+//! Some blocks allow missing placeholders, for example [bluetooth](crate::blocks::bluetooth)'s
+//! "percentage" may be absent if the device is not supported. To handle such cases it is possible
+//! to queue multiple formats together by using `|` symbol: `<something that can fail>|<otherwise
+//! try this>|<or this>`.
+//!
+//! In addition, formats can be recursive. To set a format inside of another format, place it
+//! inside of `{}`. For example, in `Percentage: {$percentage|N/A}` the text "Percentage: " will be
+//! always displayed, followed by the actual percentage or "N/A" in case percentage is not
+//! available. This example does exactly the same thing as `Percentage: $percentage|Percentage: N/A`
+//!
+//! # How to use flags
+//!
+//! Some blocks provide flags, which can be used to change the format based on some criteria. For
+//! example, [taskwarrior](crate::blocks::taskwarrior) defines `done` if the count is zero. In
+//! general, flags are used in this way:
+//!
+//! ```text
+//! $a{a is set}|$b$c{b and c are set}|${b|c}{b or c is set}|neither flag is set
+//! ```
+
+pub mod config;
+pub mod formatter;
+pub mod parse;
 pub mod prefix;
+pub mod scheduling;
+pub mod template;
 pub mod unit;
 pub mod value;
 
-use std::borrow::Borrow;
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fmt;
-use std::hash::Hash;
+use std::sync::Arc;
 
-use serde::de::{MapAccess, Visitor};
-use serde::{de, Deserialize, Deserializer};
-
+use crate::config::SharedConfig;
 use crate::errors::*;
-use placeholder::unexpected_token;
-use placeholder::Placeholder;
+use template::FormatTemplate;
 use value::Value;
 
-#[derive(Debug, Clone, PartialEq)]
-enum Token {
-    Text(String),
-    Var(Placeholder),
+pub type Values = HashMap<Cow<'static, str>, Value>;
+
+#[derive(Debug, Clone)]
+pub struct Format {
+    full: Arc<FormatTemplate>,
+    short: Arc<FormatTemplate>,
+    intervals: Vec<u64>,
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct FormatTemplate {
-    full: Option<Vec<Token>>,
-    short: Option<Vec<Token>>,
-}
-
-pub trait FormatMapKey: Borrow<str> + Eq + Hash {}
-impl<T> FormatMapKey for T where T: Borrow<str> + Eq + Hash {}
-
-impl FormatTemplate {
-    pub fn new(full: &str, short: Option<&str>) -> Result<Self> {
-        Self::new_opt(Some(full), short)
+impl Format {
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.full.contains_key(key) || self.short.contains_key(key)
     }
 
-    pub fn new_opt(full: Option<&str>, short: Option<&str>) -> Result<Self> {
-        let full = match full {
-            Some(full) => Some(Self::tokens_from_string(full)?),
-            None => None,
-        };
-        let short = match short {
-            Some(short) => Some(Self::tokens_from_string(short)?),
-            None => None,
-        };
-        Ok(Self { full, short })
-    }
-
-    /// Initialize `full` field if it is `None`
-    pub fn with_default(mut self, default_full: &str) -> Result<Self> {
-        if self.full.is_none() {
-            self.full = Some(Self::tokens_from_string(default_full)?);
-        }
-        Ok(self)
-    }
-
-    /// Whether the format string contains a given placeholder
-    pub fn contains(&self, var: &str) -> bool {
-        Self::format_get(&self.full, var).is_some() || Self::format_get(&self.short, var).is_some()
-    }
-    /// Returns given placeholders if the format string contain them in the (full, short) order
-    pub fn get(&self, var: &str) -> (Option<&Placeholder>, Option<&Placeholder>) {
-        let full = Self::format_get(&self.full, var);
-        let short = Self::format_get(&self.short, var);
-        (full, short)
-    }
-
-    pub fn has_tokens(&self) -> bool {
-        !self.full.as_ref().map(Vec::is_empty).unwrap_or(true)
-            || !self.short.as_ref().map(Vec::is_empty).unwrap_or(true)
-    }
-
-    fn format_get<'a>(format: &'a Option<Vec<Token>>, var: &str) -> Option<&'a Placeholder> {
-        if let Some(tokens) = format {
-            for token in tokens {
-                if let Token::Var(ref placeholder) = token {
-                    if placeholder.name == var {
-                        return Some(placeholder);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn tokens_from_string(mut s: &str) -> Result<Vec<Token>> {
-        let mut tokens = vec![];
-
-        // Push text into tokens vector. Check the text for correctness and don't push empty strings
-        let push_text = |tokens: &mut Vec<Token>, x: &str| {
-            if x.contains('{') {
-                unexpected_token('{')
-            } else if x.contains('}') {
-                unexpected_token('}')
-            } else if !x.is_empty() {
-                tokens.push(Token::Text(x.to_string()));
-                Ok(())
-            } else {
-                Ok(())
-            }
-        };
-
-        while !s.is_empty() {
-            // Split `"text {key:1} {key}"` into `"text "` and `"key:1} {key}"`
-            match s.split_once('{') {
-                // No placeholders found -> the whole string is just text
-                None => {
-                    push_text(&mut tokens, s)?;
-                    break;
-                }
-                // Found placeholder
-                Some((before, after)) => {
-                    // `before` is just a text
-                    push_text(&mut tokens, before)?;
-                    // Split `"key:1} {key}"` into `"key:1"` and `" {key}"`
-                    match after.split_once('}') {
-                        // No matching `}`!
-                        None => {
-                            return Err(Error::new("missing '}'"));
-                        }
-                        // Found the entire placeholder
-                        Some((placeholder, rest)) => {
-                            // `placeholder.parse()` parses the placeholder's configuration string
-                            // (e.g. something like `"key:1;K"`) into `Placeholder` struct. We don't
-                            // need to think about that in this code.
-                            tokens.push(Token::Var(placeholder.parse()?));
-                            s = rest;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(tokens)
+    pub fn intervals(&self) -> Vec<u64> {
+        self.intervals.clone()
     }
 
     pub fn render(
         &self,
-        vars: &HashMap<impl FormatMapKey, Value>,
-    ) -> Result<(String, Option<String>)> {
-        let full = match &self.full {
-            Some(tokens) => Self::render_tokens(tokens, vars)?,
-            None => String::new(), // TODO: throw an error that says that it's a bug?
-        };
-        let short = match &self.short {
-            Some(short) => Some(Self::render_tokens(short, vars)?),
-            None => None,
-        };
+        values: &Values,
+        config: &SharedConfig,
+    ) -> Result<(Vec<Fragment>, Vec<Fragment>)> {
+        let full = self
+            .full
+            .render(values, config)
+            .error("Failed to render full text")?;
+        let short = self
+            .short
+            .render(values, config)
+            .error("Failed to render short text")?;
         Ok((full, short))
     }
+}
 
-    fn render_tokens(tokens: &[Token], vars: &HashMap<impl FormatMapKey, Value>) -> Result<String> {
-        let mut rendered = String::new();
-        for token in tokens {
-            match token {
-                Token::Text(text) => rendered.push_str(text),
-                Token::Var(var) => rendered.push_str(
-                    &vars
-                        .get(&*var.name)
-                        .map_error_msg(|| {
-                            format!("Unknown placeholder in format string: '{}'", var.name)
-                        })?
-                        .format(var)?,
-                ),
-            }
+#[derive(Debug, Default, Clone)]
+pub struct Fragment {
+    pub text: String,
+    pub metadata: Metadata,
+}
+
+impl From<String> for Fragment {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            metadata: Default::default(),
         }
-        Ok(rendered)
     }
 }
 
-impl<'de> Deserialize<'de> for FormatTemplate {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(field_identifier, rename_all = "lowercase")]
-        enum Field {
-            Full,
-            Short,
+impl Fragment {
+    pub fn formatted_text(&self) -> String {
+        match (self.metadata.italic, self.metadata.underline) {
+            (true, true) => format!("<i><u>{}</u></i>", self.text),
+            (false, true) => format!("<u>{}</u>", self.text),
+            (true, false) => format!("<i>{}</i>", self.text),
+            (false, false) => self.text.clone(),
         }
-
-        struct FormatTemplateVisitor;
-
-        impl<'de> Visitor<'de> for FormatTemplateVisitor {
-            type Value = FormatTemplate;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("format structure")
-            }
-
-            /// Handle configs like:
-            ///
-            /// ```toml
-            /// format = "{layout}"
-            /// ```
-            fn visit_str<E>(self, full: &str) -> Result<FormatTemplate, E>
-            where
-                E: de::Error,
-            {
-                FormatTemplate::new(full, None).map_err(de::Error::custom)
-            }
-
-            /// Handle configs like:
-            ///
-            /// ```toml
-            /// [block.format]
-            /// full = "{layout}"
-            /// short = "{layout^2}"
-            /// ```
-            fn visit_map<V>(self, mut map: V) -> Result<FormatTemplate, V::Error>
-            where
-                V: MapAccess<'de>,
-            {
-                let mut full: Option<String> = None;
-                let mut short: Option<String> = None;
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        Field::Full => {
-                            if full.is_some() {
-                                return Err(de::Error::duplicate_field("full"));
-                            }
-                            full = Some(map.next_value()?);
-                        }
-                        Field::Short => {
-                            if short.is_some() {
-                                return Err(de::Error::duplicate_field("short"));
-                            }
-                            short = Some(map.next_value()?);
-                        }
-                    }
-                }
-
-                FormatTemplate::new_opt(full.as_deref(), short.as_deref())
-                    .map_err(de::Error::custom)
-            }
-        }
-
-        deserializer.deserialize_any(FormatTemplateVisitor)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Metadata {
+    pub instance: Option<&'static str>,
+    pub underline: bool,
+    pub italic: bool,
+}
 
-    #[test]
-    fn render() {
-        let ft = FormatTemplate::new(
-            "some text {var} var again {var}{new_var:3} {bar:2#100} {freq;1}.",
-            None,
-        );
-        assert!(ft.is_ok());
-
-        let values = map!(
-            "var" => Value::from_string("|var value|".to_string()),
-            "new_var" => Value::from_integer(12),
-            "bar" => Value::from_integer(25),
-            "freq" => Value::from_float(0.01).hertz(),
-        );
-
-        assert_eq!(
-            ft.unwrap().render(&values).unwrap().0.as_str(),
-            "some text |var value| var again |var value| 12 \u{258c}  0.0Hz."
-        );
-    }
-
-    #[test]
-    fn contains() {
-        let format = FormatTemplate::new("some text {foo} {bar:1} foobar", None);
-        assert!(format.is_ok());
-        let format = format.unwrap();
-        assert!(format.contains("foo"));
-        assert!(format.contains("bar"));
-        assert!(!format.contains("foobar"));
-        assert!(!format.contains("random string"));
-    }
-
-    #[test]
-    fn get() {
-        let format = FormatTemplate::new("some text {foo} {bar:8^12;_M*_b#50} foobar", None);
-        assert!(format.is_ok());
-        let format = format.unwrap();
-        assert!(format.get("foo").1.is_none());
-
-        let foo = format.get("foo").0.unwrap();
-        let mut empty_foo = "".parse::<Placeholder>().unwrap();
-        empty_foo.name = "foo".to_owned();
-        assert!(foo == &empty_foo);
-
-        let bar = format.get("bar").0.unwrap();
-        assert!(bar.name == "bar");
-
-        assert!(bar.min_width.value == Some(8));
-        assert!(bar.min_width.pad_with == ' ');
-
-        assert!(bar.max_width == Some(12));
-
-        assert!(bar.min_prefix.hidden);
-        assert!(!bar.min_prefix.space);
-        assert!(bar.min_prefix.value == Some(prefix::Prefix::Mega));
-
-        assert!(bar.unit.hidden);
-        assert!(bar.unit.unit == Some(unit::Unit::Bits));
-        assert!(bar.bar_max_value == Some(50_f64));
+impl Metadata {
+    pub fn is_default(&self) -> bool {
+        *self == Default::default()
     }
 }

@@ -1,359 +1,443 @@
-use serde_derive::Deserialize;
+//! Monitor Bluetooth device
+//!
+//! This block displays the connectivity of a given Bluetooth device and the battery level if this
+//! is supported. Relies on the Bluez D-Bus API.
+//!
+//! When the device can be identified as an audio headset, a keyboard, joystick, or mouse, use the
+//! relevant icon. Otherwise, fall back on the generic Bluetooth symbol.
+//!
+//! Right-clicking the block will attempt to connect (or disconnect) the device.
+//!
+//! Note: battery level information is not reported for some devices. [Enabling experimental
+//! features of `bluez`](https://wiki.archlinux.org/title/bluetooth#Enabling_experimental_features)
+//! may fix it.
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `mac` | MAC address of the Bluetooth device | **Required**
+//! `adapter_mac` | MAC Address of the Bluetooth adapter (in case your device was connected to multiple currently available adapters) | `None`
+//! `format` | A string to customise the output of this block. See below for available placeholders. | <code>" $icon $name{ $percentage&vert;} "</code>
+//! `disconnected_format` | A string to customise the output of this block. See below for available placeholders. | <code>" $icon{ $name&vert;} "</code>
+//! `battery_state` | A mapping from battery percentage to block's [state](State) (color). See example below. | 0..15 -> critical, 16..30 -> warning, 31..60 -> info, 61..100 -> good
+//!
+//! Placeholder    | Value                                                                 | Type   | Unit
+//! ---------------|-----------------------------------------------------------------------|--------|------
+//! `icon`         | Icon based on what type of device is connected                        | Icon   | -
+//! `name`         | Device's name                                                         | Text   | -
+//! `percentage`   | Device's battery level (may be absent if the device is not supported) | Number | %
+//! `battery_icon` | Battery icon (may be absent if the device is not supported)           | Icon   | -
+//! `available`    | Present if the device is available                                    | Flag   | -
+//!
+//! Action   | Default button
+//! ---------|---------------
+//! `toggle` | Right
+//!
+//! # Examples
+//!
+//! This example just shows the icon when device is connected.
+//!
+//! ```toml
+//! [[block]]
+//! block = "bluetooth"
+//! mac = "00:18:09:92:1B:BA"
+//! disconnected_format = ""
+//! format = " $icon "
+//! [block.battery_state]
+//! "0..20" = "critical"
+//! "21..70" = "warning"
+//! "71..100" = "good"
+//! ```
+//!
+//! # Icons Used
+//! - `headphones` for bluetooth devices identifying as "audio-card", "audio-headset" or "audio-headphones"
+//! - `joystick` for bluetooth devices identifying as "input-gaming"
+//! - `keyboard` for bluetooth devices identifying as "input-keyboard"
+//! - `mouse` for bluetooth devices identifying as "input-mouse"
+//! - `bluetooth` for all other devices
 
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use zbus::fdo::{DBusProxy, ObjectManagerProxy, PropertiesProxy};
 
-use crossbeam_channel::Sender;
-use dbus::{
-    arg::RefArg,
-    ffidisp::stdintf::org_freedesktop_dbus::{ObjectManager, Properties},
-    message::SignalArgs,
-};
+use super::prelude::*;
+use crate::wrappers::RangeMap;
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::errors::*;
-use crate::formatting::value::Value;
-use crate::formatting::FormatTemplate;
-use crate::protocol::i3bar_event::{I3BarEvent, MouseButton};
-use crate::scheduler::Task;
-use crate::widgets::text::TextWidget;
-use crate::widgets::{I3BarWidget, State};
+make_log_macro!(debug, "bluetooth");
 
-pub struct BluetoothDevice {
-    pub path: String,
-    pub icon: Option<String>,
-    pub label: String,
-    con: dbus::ffidisp::Connection,
-    available: Arc<Mutex<bool>>,
-}
-
-impl BluetoothDevice {
-    pub fn new(mac: String, controller_id: String, label: Option<String>) -> Result<Self> {
-        let con = dbus::ffidisp::Connection::get_private(dbus::ffidisp::BusType::System)
-            .error_msg("Failed to establish D-Bus connection.")?;
-
-        // Bluez does not provide a convenient way to list devices, so we
-        // have to employ a rather verbose workaround.
-        let objects = con
-            .with_path("org.bluez", "/", 1000)
-            .get_managed_objects()
-            .error_msg("Failed to get managed objects from org.bluez.")?;
-
-        // If we need to suppress errors from missing devices, this is the place
-        // to do it. We could also pick the "default" device here, although that
-        // does not make much sense to me in the context of Bluetooth.
-        let mut initial_available = false;
-        let auto_path = objects
-            .into_iter()
-            .filter(|(_, interfaces)| interfaces.contains_key("org.bluez.Device1"))
-            .map(|(path, interfaces)| {
-                let props = interfaces.get("org.bluez.Device1").unwrap();
-                // This could be made safer; however this is the documented
-                // D-Bus API format, so it's not a terrible idea to panic if it
-                // is violated.
-                let address: String = props
-                    .get("Address")
-                    .unwrap()
-                    .0
-                    .as_str()
-                    .unwrap()
-                    .to_string();
-                let adapter: String = props
-                    .get("Adapter")
-                    .unwrap()
-                    .0
-                    .as_str()
-                    .unwrap()
-                    .to_string();
-                (path, adapter, address)
-            })
-            .filter(|(_, _, address)| address == &mac)
-            .filter(|(_, adapter, _)| adapter.ends_with(&controller_id))
-            .map(|(path, _, _)| path)
-            .next();
-        let path = if let Some(p) = auto_path {
-            initial_available = true;
-            p
-        } else {
-            // TODO: possible not to hardcode device?
-            dbus::strings::Path::new(format!(
-                "/org/bluez/{}/dev_{}",
-                controller_id,
-                mac.replace(':', "_")
-            ))
-            .unwrap()
-        }
-        .to_string();
-
-        // Swallow errors, since this is optional.
-        let icon: Option<String> = con
-            .with_path("org.bluez", &path, 1000)
-            .get("org.bluez.Device1", "Icon")
-            .ok();
-
-        // TODO: revisit this lint
-        #[allow(clippy::mutex_atomic)]
-        let available = Arc::new(Mutex::new(initial_available));
-
-        Ok(BluetoothDevice {
-            path,
-            icon,
-            label: label.unwrap_or_else(|| "".to_string()),
-            con,
-            available,
-        })
-    }
-
-    pub fn battery(&self) -> Option<u8> {
-        // Swallow errors here; not all devices implement this API.
-        self.con
-            .with_path("org.bluez", &self.path, 1000)
-            .get("org.bluez.Battery1", "Percentage")
-            .ok()
-    }
-
-    pub fn icon(&self) -> Option<String> {
-        self.con
-            .with_path("org.bluez", &self.path, 1000)
-            .get("org.bluez.Device1", "Icon")
-            .ok()
-    }
-
-    pub fn available(&self) -> bool {
-        *self.available.lock().unwrap()
-    }
-
-    pub fn connected(&self) -> bool {
-        self.con
-            .with_path("org.bluez", &self.path, 1000)
-            .get("org.bluez.Device1", "Connected")
-            // In the case that the D-Bus interface missing or responds
-            // incorrectly, it seems reasonable to treat the device as "down"
-            // instead of nuking the bar. This matches the behaviour elsewhere.
-            .unwrap_or(false)
-    }
-
-    pub fn toggle(&self) -> Result<()> {
-        // TODO: power on adapter if it's off
-        // i.e. busctl --system set-property org.bluez /org/bluez/hci0 org.bluez.Adapter1 Powered b true
-        let method = if self.connected() {
-            "Disconnect"
-        } else {
-            "Connect"
-        };
-        let msg =
-            dbus::Message::new_method_call("org.bluez", &self.path, "org.bluez.Device1", method)
-                .error_msg("Failed to build D-Bus method.")?;
-
-        let _ = self.con.send(msg);
-        Ok(())
-    }
-
-    /// Monitor Bluetooth property changes in a separate thread and send updates
-    /// via the `update_request` channel.
-    pub fn monitor(&self, id: usize, update_request: Sender<Task>) {
-        let path_copy1 = self.path.clone();
-        let path_copy2 = self.path.clone();
-        let avail_copy1 = self.available.clone();
-        let avail_copy2 = self.available.clone();
-        let update_request_copy1 = update_request.clone();
-        let update_request_copy2 = update_request.clone();
-        let update_request_copy3 = update_request;
-
-        thread::Builder::new().name("bluetooth".into()).spawn(move || {
-            let c = dbus::blocking::Connection::new_system().unwrap();
-            use dbus::ffidisp::stdintf::org_freedesktop_dbus::ObjectManagerInterfacesAdded as IA;
-            let ma = IA::match_rule(Some(&"org.bluez".into()), None).static_clone();
-            c.add_match(ma, move |ia: IA, _, _| {
-                if ia.object == path_copy1.clone().into() {
-                    let mut avail = avail_copy1.lock().unwrap();
-                    *avail = true;
-                    update_request_copy1
-                        .send(Task {
-                            id,
-                            update_time: Instant::now(),
-                        })
-                        .unwrap();
-                }
-                true
-            })
-            .unwrap();
-
-            use dbus::ffidisp::stdintf::org_freedesktop_dbus::ObjectManagerInterfacesRemoved as IR;
-            let mr = IR::match_rule(Some(&"org.bluez".into()), None).static_clone();
-            c.add_match(mr, move |ir: IR, _, _| {
-                if ir.object == path_copy2.clone().into() {
-                    let mut avail = avail_copy2.lock().unwrap();
-                    *avail = false;
-                    update_request_copy2
-                        .send(Task {
-                            id,
-                            update_time: Instant::now(),
-                        })
-                        .unwrap();
-                }
-                true
-            })
-            .unwrap();
-
-            use dbus::ffidisp::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged as PPC;
-            let mr = PPC::match_rule(Some(&"org.bluez".into()), None).static_clone();
-            // TODO: get updated values from the signal message
-            c.add_match(mr, move |_ppc: PPC, _, _| {
-                update_request_copy3
-                    .send(Task {
-                        id,
-                        update_time: Instant::now(),
-                    })
-                    .unwrap();
-                true
-            })
-            .unwrap();
-
-            loop {
-                c.process(Duration::from_millis(1000)).unwrap();
-            }
-        }).unwrap();
-    }
-}
-
-pub struct Bluetooth {
-    output: TextWidget,
-    device: BluetoothDevice,
-    hide_disconnected: bool,
-    format: FormatTemplate,
-    format_disconnected: FormatTemplate,
-    format_unavailable: FormatTemplate,
-}
-
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct BluetoothConfig {
+pub struct Config {
     pub mac: String,
-    #[serde(default = "default_controller")]
-    pub controller_id: String,
     #[serde(default)]
-    pub hide_disconnected: bool,
+    pub adapter_mac: Option<String>,
     #[serde(default)]
-    pub format: FormatTemplate,
+    pub format: FormatConfig,
     #[serde(default)]
-    pub format_disconnected: FormatTemplate,
+    pub disconnected_format: FormatConfig,
     #[serde(default)]
-    pub format_unavailable: FormatTemplate,
-    //DEPRECATED, TODO: REMOVE
-    pub label: Option<String>,
+    pub battery_state: Option<RangeMap<u8, State>>,
 }
 
-fn default_controller() -> String {
-    // If there are multiple controllers, then the wrong one might be selected on updates.
-    // Avoid this by allowing the controller to be specified.
-    // This also applies in the case where the bluetooth module is disabled on startup,
-    // and we set a manual fallback path. There's no way to know the controller id beforehand,
-    // so we default to hci0, but this might not always be the desired controller.
-    String::from("hci0")
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    api.set_default_actions(&[(MouseButton::Right, None, "toggle")])
+        .await?;
+
+    let format = config.format.with_default(" $icon $name{ $percentage|} ")?;
+    let disconnected_format = config
+        .disconnected_format
+        .with_default(" $icon{ $name|} ")?;
+
+    let mut monitor = DeviceMonitor::new(config.mac, config.adapter_mac).await?;
+
+    let battery_states = config.battery_state.unwrap_or_else(|| {
+        vec![
+            (0..=15, State::Critical),
+            (16..=30, State::Warning),
+            (31..=60, State::Info),
+            (61..=100, State::Good),
+        ]
+        .into()
+    });
+
+    loop {
+        match monitor.get_device_info().await {
+            // Available
+            Some(device) => {
+                debug!("Device available, info: {device:?}");
+
+                let mut widget = Widget::new();
+
+                let values = map! {
+                    "icon" => Value::icon(api.get_icon(device.icon)?),
+                    "name" => Value::text(device.name),
+                    "available" => Value::flag(),
+                    [if let Some(p) = device.battery_percentage] "percentage" => Value::percents(p),
+                    [if let Some(p) = device.battery_percentage]
+                        "battery_icon" => Value::icon(api.get_icon_in_progression("bat", p as f64 / 100.0)?),
+                };
+
+                if device.connected {
+                    widget.set_format(format.clone());
+                    widget.state = battery_states
+                        .get(&device.battery_percentage.unwrap_or(100))
+                        .copied()
+                        .unwrap_or(State::Good);
+                } else {
+                    widget.set_format(disconnected_format.clone());
+                    widget.state = State::Idle;
+                }
+
+                widget.set_values(values);
+                api.set_widget(widget).await?;
+            }
+            // Unavailable
+            None => {
+                debug!("Showing device as unavailable");
+                let mut widget = Widget::new().with_format(disconnected_format.clone());
+                widget.set_values(map!("icon" => Value::icon(api.get_icon("bluetooth")?)));
+                api.set_widget(widget).await?;
+            }
+        }
+
+        loop {
+            select! {
+                res = monitor.wait_for_change() => {
+                    res?;
+                    break;
+                },
+                event = api.event() => match event {
+                    Action(a) if a == "toggle" => {
+                        if let Some(dev) = &monitor.device {
+                            if let Ok(connected) = dev.device.connected().await {
+                                if connected {
+                                    let _ = dev.device.disconnect().await;
+                                } else {
+                                    let _ = dev.device.connect().await;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    _ => (),
+                }
+            }
+        }
+    }
 }
 
-impl ConfigBlock for Bluetooth {
-    type Config = BluetoothConfig;
+struct DeviceMonitor {
+    mac: String,
+    adapter_mac: Option<String>,
+    manager_proxy: ObjectManagerProxy<'static>,
+    device: Option<Device>,
+}
 
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        send: Sender<Task>,
-    ) -> Result<Self> {
-        let device = BluetoothDevice::new(
-            block_config.mac,
-            block_config.controller_id,
-            block_config.label,
-        )?;
-        device.monitor(id, send);
+struct Device {
+    props: PropertiesProxy<'static>,
+    device: Device1Proxy<'static>,
+    battery: Battery1Proxy<'static>,
+}
 
-        Ok(Bluetooth {
-            output: TextWidget::new(id, 0, shared_config).with_icon(match device.icon {
-                Some(ref icon) if icon == "audio-card" => "headphones",
-                Some(ref icon) if icon == "input-gaming" => "joystick",
-                Some(ref icon) if icon == "input-keyboard" => "keyboard",
-                Some(ref icon) if icon == "input-mouse" => "mouse",
-                _ => "bluetooth",
-            })?,
+#[derive(Debug)]
+struct DeviceInfo {
+    connected: bool,
+    icon: &'static str,
+    name: String,
+    battery_percentage: Option<u8>,
+}
+
+impl DeviceMonitor {
+    async fn new(mac: String, adapter_mac: Option<String>) -> Result<Self> {
+        let dbus_conn = new_system_dbus_connection().await?;
+        let manager_proxy = ObjectManagerProxy::builder(&dbus_conn)
+            .destination("org.bluez")
+            .and_then(|x| x.path("/"))
+            .unwrap()
+            .build()
+            .await
+            .error("Failed to create ObjectManagerProxy")?;
+        let device = Device::try_find(&manager_proxy, &mac, adapter_mac.as_deref()).await?;
+        Ok(Self {
+            mac,
+            adapter_mac,
+            manager_proxy,
             device,
-            hide_disconnected: block_config.hide_disconnected,
-            format: block_config.format.with_default("{label} {percentage}")?,
-            format_disconnected: block_config.format_disconnected.with_default("{label}")?,
-            format_unavailable: block_config.format_unavailable.with_default("{label} x")?,
+        })
+    }
+
+    async fn wait_for_change(&mut self) -> Result<()> {
+        match &mut self.device {
+            None => {
+                let mut interface_added = self
+                    .manager_proxy
+                    .receive_interfaces_added()
+                    .await
+                    .error("Failed to monitor interfaces")?;
+                loop {
+                    interface_added
+                        .next()
+                        .await
+                        .error("Stream ended unexpectedly")?;
+                    if let Some(device) = Device::try_find(
+                        &self.manager_proxy,
+                        &self.mac,
+                        self.adapter_mac.as_deref(),
+                    )
+                    .await?
+                    {
+                        self.device = Some(device);
+                        debug!("Device has been added");
+                        return Ok(());
+                    }
+                }
+            }
+            Some(device) => {
+                let mut updates = device
+                    .props
+                    .receive_properties_changed()
+                    .await
+                    .error("Failed to receive updates")?;
+
+                let mut interface_added = self
+                    .manager_proxy
+                    .receive_interfaces_added()
+                    .await
+                    .error("Failed to monitor interfaces")?;
+
+                let mut interface_removed = self
+                    .manager_proxy
+                    .receive_interfaces_removed()
+                    .await
+                    .error("Failed to monitor interfaces")?;
+
+                let mut bluez_owner_changed = DBusProxy::new(self.manager_proxy.connection())
+                    .await
+                    .error("Failed to create DBusProxy")?
+                    .receive_name_owner_changed_with_args(&[(0, "org.bluez")])
+                    .await
+                    .unwrap();
+
+                loop {
+                    select! {
+                        _ = updates.next() => {
+                            // avoid too frequent updates
+                            let _ = tokio::time::timeout(Duration::from_millis(100), async {
+                                loop { let _ = updates.next().await; }
+                            }).await;
+                            debug!("Got update for device");
+                            return Ok(());
+                        }
+                        Some(event) = interface_added.next() => {
+                            let args = event.args().error("Failed to get the args")?;
+                            if args.object_path() == device.device.path() {
+                                debug!("Interfaces added: {:?}", args.interfaces_and_properties().keys());
+                                return Ok(());
+                            }
+                        }
+                        Some(event) = interface_removed.next() => {
+                            let args = event.args().error("Failed to get the args")?;
+                            if args.object_path() == device.device.path() {
+                                self.device = None;
+                                debug!("Device is no longer available");
+                                return Ok(());
+                            }
+                        }
+                        Some(event) = bluez_owner_changed.next() => {
+                            let args = event.args().error("Failed to get the args")?;
+                            if args.new_owner.is_none() {
+                                self.device = None;
+                                debug!("org.bluez disappeared");
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn get_device_info(&mut self) -> Option<DeviceInfo> {
+        let device = self.device.as_ref()?;
+
+        let Ok((connected, icon, name)) = tokio::try_join!(
+            device.device.connected(),
+            device.device.icon(),
+            device.device.name(),
+        ) else {
+            debug!("failed to fetch device info, assuming device or bluez disappeared");
+            self.device = None;
+            return None;
+        };
+
+        Some(DeviceInfo {
+            connected,
+            icon: match icon.as_str() {
+                "audio-card" | "audio-headset" | "audio-headphones" => "headphones",
+                "input-gaming" => "joystick",
+                "input-keyboard" => "keyboard",
+                "input-mouse" => "mouse",
+                _ => "bluetooth",
+            },
+            name,
+            battery_percentage: device.battery.percentage().await.ok(),
         })
     }
 }
 
-impl Block for Bluetooth {
-    fn name(&self) -> &'static str {
-        "bluetooth"
-    }
+impl Device {
+    async fn try_find(
+        manager_proxy: &ObjectManagerProxy<'_>,
+        mac: &str,
+        adapter_mac: Option<&str>,
+    ) -> Result<Option<Self>> {
+        let Ok(devices) = manager_proxy
+            .get_managed_objects()
+            .await
+        else {
+            debug!("could not get the list of managed objects");
+            return Ok(None);
+        };
 
-    fn update(&mut self) -> Result<Option<Update>> {
-        if self.device.available() {
-            let values = map!(
-                "label" => Value::from_string(self.device.label.clone()),
-                "percentage" => Value::from_integer(self.device.battery().unwrap_or(0) as i64).percents(),
-            );
+        debug!("all managed devices: {:?}", devices);
 
-            let connected = self.device.connected();
-            self.output.set_text(self.device.label.to_string());
-            self.output
-                .set_state(if connected { State::Good } else { State::Idle });
-
-            self.output.set_icon(match self.device.icon() {
-                Some(ref icon) if icon == "audio-card" => "headphones",
-                Some(ref icon) if icon == "input-gaming" => "joystick",
-                Some(ref icon) if icon == "input-keyboard" => "keyboard",
-                Some(ref icon) if icon == "input-mouse" => "mouse",
-                _ => "bluetooth",
-            })?;
-
-            // Use battery info, when available.
-            if let Some(value) = self.device.battery() {
-                self.output.set_state(match value {
-                    0..=15 => State::Critical,
-                    16..=30 => State::Warning,
-                    31..=60 => State::Info,
-                    61..=100 => State::Good,
-                    _ => State::Warning,
-                });
+        let root_object: Option<String> = match adapter_mac {
+            Some(adapter_mac) => {
+                let mut adapter_path = None;
+                for (path, interfaces) in &devices {
+                    let adapter_interface = match interfaces.get("org.bluez.Adapter1") {
+                        Some(i) => i,
+                        None => continue, // Not an adapter
+                    };
+                    let addr: &str = adapter_interface
+                        .get("Address")
+                        .and_then(|a| a.downcast_ref())
+                        .unwrap();
+                    if addr == adapter_mac {
+                        adapter_path = Some(path);
+                        break;
+                    }
+                }
+                match adapter_path {
+                    Some(path) => Some(format!("{}/", path.as_str())),
+                    None => return Ok(None),
+                }
             }
-            if connected {
-                self.output.set_texts(self.format.render(&values)?);
-            } else {
-                self.output
-                    .set_texts(self.format_disconnected.render(&values)?);
+            None => None,
+        };
+
+        debug!("root object: {:?}", root_object);
+
+        for (path, interfaces) in devices {
+            if let Some(root) = &root_object {
+                if !path.starts_with(root) {
+                    continue;
+                }
             }
-        } else {
-            let values = map!(
-                "label" => Value::from_string(self.device.label.clone()),
-                "percentage" => Value::from_string("".into()),
-            );
-            self.output.set_state(State::Idle);
-            self.output
-                .set_texts(self.format_unavailable.render(&values)?);
+
+            let Some(device_interface) = interfaces.get("org.bluez.Device1")
+            else {
+                // Not a device
+                continue;
+            };
+
+            let addr: &str = device_interface
+                .get("Address")
+                .and_then(|a| a.downcast_ref())
+                .unwrap();
+            if addr != mac {
+                continue;
+            }
+
+            debug!("Found device with path {:?}", path);
+
+            return Ok(Some(Self {
+                props: PropertiesProxy::builder(manager_proxy.connection())
+                    .destination("org.bluez")
+                    .and_then(|x| x.path(path.clone()))
+                    .unwrap()
+                    .build()
+                    .await
+                    .error("Failed to create PropertiesProxy")?,
+                device: Device1Proxy::builder(manager_proxy.connection())
+                    // No caching because https://github.com/greshake/i3status-rust/issues/1565#issuecomment-1379308681
+                    .cache_properties(zbus::CacheProperties::No)
+                    .path(path.clone())
+                    .unwrap()
+                    .build()
+                    .await
+                    .error("Failed to create Device1Proxy")?,
+                battery: Battery1Proxy::builder(manager_proxy.connection())
+                    .cache_properties(zbus::CacheProperties::No)
+                    .path(path)
+                    .unwrap()
+                    .build()
+                    .await
+                    .error("Failed to create Battery1Proxy")?,
+            }));
         }
 
+        debug!("No device found");
         Ok(None)
     }
+}
 
-    fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        if let MouseButton::Right = event.button {
-            self.device.toggle()?;
-        }
-        Ok(())
-    }
+#[zbus::dbus_proxy(interface = "org.bluez.Device1", default_service = "org.bluez")]
+trait Device1 {
+    fn connect(&self) -> zbus::Result<()>;
+    fn disconnect(&self) -> zbus::Result<()>;
 
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        if !self.device.connected() && self.hide_disconnected {
-            vec![]
-        } else {
-            vec![&self.output]
-        }
-    }
+    #[dbus_proxy(property)]
+    fn connected(&self) -> zbus::Result<bool>;
+
+    #[dbus_proxy(property)]
+    fn name(&self) -> zbus::Result<String>;
+
+    #[dbus_proxy(property)]
+    fn icon(&self) -> zbus::Result<String>;
+}
+
+#[zbus::dbus_proxy(interface = "org.bluez.Battery1", default_service = "org.bluez")]
+trait Battery1 {
+    #[dbus_proxy(property)]
+    fn percentage(&self) -> zbus::Result<u8>;
 }

@@ -1,235 +1,265 @@
-use std::fmt;
-use std::time::{Duration, Instant};
+//! A [pomodoro timer](https://en.wikipedia.org/wiki/Pomodoro_Technique)
+//!
+//! # Technique
+//!
+//! There are six steps in the original technique:
+//! 1) Decide on the task to be done.
+//! 2) Set the pomodoro timer (traditionally to 25 minutes).
+//! 3) Work on the task.
+//! 4) End work when the timer rings and put a checkmark on a piece of paper.
+//! 5) If you have fewer than four checkmarks, take a short break (3–5 minutes) and then return to step 2.
+//! 6) After four pomodoros, take a longer break (15–30 minutes), reset your checkmark count to zero, then go to step 1.
+//!
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `format` | A string to customise the output of this block. | <code>" $icon{ $message&vert;} "</code>
+//! `message` | Message when timer expires | `"Pomodoro over! Take a break!"`
+//! `break_message` | Message when break is over | `"Break over! Time to work!"`
+//! `notify_cmd` | A shell command to run as a notifier. `{msg}` will be substituted with either `message` or `break_message`. | `None`
+//! `blocking_cmd` | Is `notify_cmd` blocking? If it is, then pomodoro block will wait until the command finishes before proceeding. Otherwise, you will have to click on the block in order to proceed. | `false`
+//!
+//! Placeholder | Value                               | Type
+//! ------------|-------------------------------------|------
+//! `icon`      | A static icon                       | Icon
+//! `message`   | Current message                     | Text
+//!
+//! # Example
+//!
+//! Use `swaynag` as a notifier:
+//!
+//! ```toml
+//! [[block]]
+//! block = "pomodoro"
+//! notify_cmd = "swaynag -m '{msg}'"
+//! blocking_cmd = true
+//! ```
+//!
+//! Use `notify-send` as a notifier:
+//!
+//! ```toml
+//! [[block]]
+//! block = "pomodoro"
+//! notify_cmd = "notify-send '{msg}'"
+//! blocking_cmd = false
+//! ```
+//!
+//! # Icons Used
+//! - `pomodoro`
+//! - `pomodoro_started`
+//! - `pomodoro_stopped`
+//! - `pomodoro_paused`
+//! - `pomodoro_break`
+//!
+//! # TODO
+//! - Use different icons.
+//! - Use format strings.
 
-use crossbeam_channel::Sender;
-use serde_derive::Deserialize;
+use super::prelude::*;
+use crate::subprocess::{spawn_shell, spawn_shell_sync};
+use std::time::Instant;
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::errors::*;
-use crate::protocol::i3bar_event::{I3BarEvent, MouseButton};
-use crate::scheduler::Task;
-use crate::subprocess::spawn_child_async;
-use crate::widgets::text::TextWidget;
-use crate::widgets::I3BarWidget;
-
-#[derive(Clone, Copy)]
-enum State {
-    Started(Instant),
-    Stopped,
-    Paused(Duration),
-    OnBreak(Instant),
-}
-
-impl fmt::Display for State {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Stopped => write!(f, "0:00"),
-            Self::Started(i) | State::OnBreak(i) => {
-                let elapsed = i.elapsed();
-                write!(
-                    f,
-                    "{}:{:02}",
-                    elapsed.as_secs() / 60,
-                    elapsed.as_secs() % 60
-                )
-            }
-            Self::Paused(duration) => write!(
-                f,
-                "{}:{:02}",
-                duration.as_secs() / 60,
-                duration.as_secs() % 60
-            ),
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Notifier {
-    I3Nag,
-    SwayNag,
-    NotifySend,
-    None,
-}
-
-pub struct Pomodoro {
-    time: TextWidget,
-    state: State,
-    length: Duration,
-    break_length: Duration,
-    update_interval: Duration,
-    message: String,
-    break_message: String,
-    count: usize,
-    notifier: Notifier,
-    notifier_path: String,
-    shared_config: SharedConfig,
-    // Following two are deprecated - remove in a later release
-    use_nag: bool,
-    nag_path: String,
-}
-
-impl Pomodoro {
-    fn set_text(&mut self) -> Result<()> {
-        let state_icon = match self.state {
-            State::Stopped => "pomodoro_stopped",
-            State::Started(_) => "pomodoro_started",
-            State::OnBreak(_) => "pomodoro_break",
-            State::Paused(_) => "pomodoro_paused",
-        };
-
-        self.time.set_text(format!(
-            "{} | {} {}",
-            self.count,
-            self.shared_config.get_icon(state_icon)?,
-            self.state
-        ));
-
-        Ok(())
-    }
-
-    fn notify(&self, message: &str, level: &str) -> Result<()> {
-        let urgency = if level == "error" {
-            "critical"
-        } else {
-            "normal"
-        };
-        let args = if self.notifier == Notifier::NotifySend {
-            ["--urgency", urgency, message, " "]
-        } else {
-            ["--type", level, "--message", message]
-        };
-
-        let binary = if self.use_nag {
-            &self.nag_path
-        } else {
-            &self.notifier_path
-        };
-
-        spawn_child_async(binary, &args).error_msg("Failed to start notifier")?;
-        Ok(())
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, SmartDefault)]
 #[serde(deny_unknown_fields, default)]
-pub struct PomodoroConfig {
-    pub length: u64,
-    pub break_length: u64,
+pub struct Config {
+    pub format: FormatConfig,
+    #[default("Pomodoro over! Take a break!".into())]
     pub message: String,
+    #[default("Break over! Time to work!".into())]
     pub break_message: String,
-    pub notifier: Notifier,
-    pub notifier_path: Option<String>,
-    // Following two are deprecated - remove in a later release
-    pub use_nag: bool,
-    pub nag_path: String,
+    pub notify_cmd: Option<String>,
+    pub blocking_cmd: bool,
 }
 
-impl Default for PomodoroConfig {
-    fn default() -> Self {
-        Self {
-            length: 25,
-            break_length: 5,
-            message: "Pomodoro over! Take a break!".to_string(),
-            break_message: "Break over! Time to work!".to_string(),
-            notifier: Notifier::None,
-            notifier_path: None,
-            // Following two are deprecated - remove in a later release
-            use_nag: false,
-            nag_path: "i3-nagbar".to_string(),
+struct Block {
+    widget: Widget,
+    api: CommonApi,
+    block_config: Config,
+}
+
+impl Block {
+    async fn set_text(&mut self, text: String) -> Result<()> {
+        let mut values = map!(
+            "icon" => Value::icon(self.api.get_icon("pomodoro")?),
+        );
+        if !text.is_empty() {
+            values.insert("message".into(), Value::text(text));
+        }
+        self.widget.set_values(values);
+        self.api.set_widget(self.widget.clone()).await
+    }
+
+    async fn wait_for_click(&mut self, button: &str) {
+        loop {
+            if let Action(action) = self.api.event().await {
+                if action == button {
+                    break;
+                }
+            }
         }
     }
-}
 
-impl ConfigBlock for Pomodoro {
-    type Config = PomodoroConfig;
-
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        _send: Sender<Task>,
-    ) -> Result<Self> {
-        Ok(Pomodoro {
-            time: TextWidget::new(id, 0, shared_config.clone()).with_icon("pomodoro")?,
-            state: State::Stopped,
-            length: Duration::from_secs(block_config.length * 60), // convert to minutes
-            break_length: Duration::from_secs(block_config.break_length * 60), // convert to minutes
-            update_interval: Duration::from_millis(1000),
-            message: block_config.message,
-            break_message: block_config.break_message,
-            count: 0,
-            notifier: block_config.notifier.clone(),
-            notifier_path: if let Some(p) = block_config.notifier_path {
-                p
-            } else {
-                match block_config.notifier {
-                    Notifier::I3Nag => "i3-nagbar",
-                    Notifier::SwayNag => "swaynag",
-                    Notifier::NotifySend => "notify-send",
-                    _ => "",
-                }
-                .into()
-            },
-            shared_config,
-            // Following two are deprecated - remove in a later release
-            use_nag: block_config.use_nag,
-            nag_path: block_config.nag_path,
-        })
-    }
-}
-
-impl Block for Pomodoro {
-    fn name(&self) -> &'static str {
-        "pomodoro"
+    async fn read_params(&mut self) -> Result<(Duration, Duration, u64)> {
+        let task_len = self.read_u64(25, "Task length:").await?;
+        let break_len = self.read_u64(5, "Break length:").await?;
+        let pomodoros = self.read_u64(4, "Pomodoros:").await?;
+        Ok((
+            Duration::from_secs(task_len * 60),
+            Duration::from_secs(break_len * 60),
+            pomodoros,
+        ))
     }
 
-    fn update(&mut self) -> Result<Option<Update>> {
-        self.set_text()?;
-        match self.state {
-            State::Started(started) => {
-                if started.elapsed() >= self.length {
-                    if self.use_nag || self.notifier != Notifier::None {
-                        self.notify(&self.message, "error")?;
-                    }
-
-                    self.state = State::OnBreak(Instant::now());
+    async fn read_u64(&mut self, mut number: u64, msg: &str) -> Result<u64> {
+        loop {
+            self.set_text(format!("{msg} {number}")).await?;
+            if let Action(action) = self.api.event().await {
+                match action.as_ref() {
+                    "_left" => break,
+                    "_up" => number += 1,
+                    "_down" => number = number.saturating_sub(1),
+                    _ => (),
                 }
             }
-            State::OnBreak(on_break) => {
-                if on_break.elapsed() >= self.break_length {
-                    if self.use_nag || self.notifier != Notifier::None {
-                        self.notify(&self.break_message, "warning")?;
-                    }
-                    self.state = State::Stopped;
-                    self.count += 1;
-                }
-            }
-            _ => {}
         }
-
-        Ok(Some(self.update_interval.into()))
+        Ok(number)
     }
 
-    fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        match event.button {
-            MouseButton::Right => {
-                self.state = State::Stopped;
-                self.count = 0;
-            }
-            _ => {
-                self.state = match self.state {
-                    State::Stopped | State::OnBreak(_) => State::Started(Instant::now()),
-                    State::Started(started) => State::Paused(started.elapsed()),
-                    State::Paused(duration) => State::Started(Instant::now() - duration),
+    async fn run_pomodoro(
+        &mut self,
+        task_len: Duration,
+        break_len: Duration,
+        pomodoros: u64,
+    ) -> Result<()> {
+        for pomodoro in 0..pomodoros {
+            // Task timer
+            self.widget.state = State::Idle;
+            let timer = Instant::now();
+            loop {
+                let elapsed = timer.elapsed();
+                if elapsed >= task_len {
+                    break;
+                }
+                let left = task_len - elapsed;
+                let text = if pomodoro == 0 {
+                    format!("{} min", (left.as_secs() + 59) / 60,)
+                } else {
+                    format!(
+                        "{} {} min",
+                        "|".repeat(pomodoro as usize),
+                        (left.as_secs() + 59) / 60,
+                    )
                 };
+                self.set_text(text).await?;
+                select! {
+                    _ = sleep(Duration::from_secs(10)) => (),
+                    event = self.api.event() => match event {
+                        Action(a) if a == "_middle" => {
+                            return Ok(());
+                        }
+                        _ => (),
+                    }
+                }
+            }
+
+            // Show break message
+            self.widget.state = State::Good;
+            self.set_text(self.block_config.message.clone()).await?;
+            if let Some(cmd) = &self.block_config.notify_cmd {
+                let cmd = cmd.replace("{msg}", &self.block_config.message);
+                if self.block_config.blocking_cmd {
+                    spawn_shell_sync(&cmd)
+                        .await
+                        .error("failed to run notify_cmd")?;
+                } else {
+                    spawn_shell(&cmd).error("failed to run notify_cmd")?;
+                    self.wait_for_click("_left").await;
+                }
+            } else {
+                self.wait_for_click("_left").await;
+            }
+
+            // No break after the last pomodoro
+            if pomodoro == pomodoros - 1 {
+                break;
+            }
+
+            // Break timer
+            let timer = Instant::now();
+            loop {
+                let elapsed = timer.elapsed();
+                if elapsed >= break_len {
+                    break;
+                }
+                let left = break_len - elapsed;
+                self.set_text(format!("Break: {} min", (left.as_secs() + 59) / 60,))
+                    .await?;
+                select! {
+                    _ = sleep(Duration::from_secs(10)) => (),
+                    event = self.api.event() => match event {
+                        Action(a) if a == "_middle" => {
+                            return Ok(());
+                        }
+                        _ => (),
+                    }
+                }
+            }
+
+            // Show task message
+            self.widget.state = State::Good;
+            self.set_text(self.block_config.break_message.clone())
+                .await?;
+            if let Some(cmd) = &self.block_config.notify_cmd {
+                let cmd = cmd.replace("{msg}", &self.block_config.break_message);
+                if self.block_config.blocking_cmd {
+                    spawn_shell_sync(&cmd)
+                        .await
+                        .error("failed to run notify_cmd")?;
+                } else {
+                    spawn_shell(&cmd).error("failed to run notify_cmd")?;
+                    self.wait_for_click("_left").await;
+                }
+            } else {
+                self.wait_for_click("_left").await;
             }
         }
-        self.set_text()
-    }
 
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![&self.time]
+        Ok(())
+    }
+}
+
+pub async fn run(block_config: Config, mut api: CommonApi) -> Result<()> {
+    api.set_default_actions(&[
+        (MouseButton::Left, None, "_left"),
+        (MouseButton::Middle, None, "_middle"),
+        (MouseButton::Right, None, "_right"),
+        (MouseButton::WheelUp, None, "_up"),
+        (MouseButton::WheelDown, None, "_down"),
+    ])
+    .await?;
+
+    let format = block_config
+        .format
+        .clone()
+        .with_default(" $icon{ $message|} ")?;
+    let widget = Widget::new().with_format(format);
+
+    let mut block = Block {
+        widget,
+        api,
+        block_config,
+    };
+
+    loop {
+        // Send collaped block
+        block.widget.state = State::Idle;
+        block.set_text(String::new()).await?;
+
+        block.wait_for_click("_left").await;
+
+        let (task_len, break_len, pomodoros) = block.read_params().await?;
+        block.run_pomodoro(task_len, break_len, pomodoros).await?;
     }
 }

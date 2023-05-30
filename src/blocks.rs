@@ -1,293 +1,353 @@
-mod base_block;
-use base_block::*;
+//! The collection of blocks
+//!
+//! Blocks are defined as a [TOML array of tables](https://github.com/toml-lang/toml/blob/main/toml.md#user-content-array-of-tables): `[[block]]`
+//!
+//! Key | Description | Default
+//! ----|-------------|----------
+//! `block` | Name of the i3status-rs block you want to use. See `Blocks` below for valid block names. Must be the first field of a block config. | -
+//! `signal` | Signal value that causes an update for this block with `0` corresponding to `-SIGRTMIN+0` and the largest value being `-SIGRTMAX` | None
+//! `if_command` | Only display the block if the supplied command returns 0 on startup. | None
+//! `merge_with_next` | If true this will group the block with the next one, so rendering such as alternating_tint will apply to the whole group | `false`
+//! `icons_format` | Overrides global `icons_format` | None
+//! `error_format` | Overrides global `error_format` | None
+//! `error_fullscreen_format` | Overrides global `error_fullscreen_format` | None
+//! `error_interval` | How long to wait until restarting the block after an error occurred. | `5`
+//! `[block.theme_overrides]` | Same as the top-level config option, but for this block only. Refer to `Themes and Icons` below. | None
+//! `[block.icons_overrides]` | Same as the top-level config option, but for this block only. Refer to `Themes and Icons` below. | None
+//! `[[block.click]]` | Set or override click action for the block. See below for details. | Block default / None
+//!
+//! Per block click configuration `[[block.click]]`:
+//!
+//! Key | Description | Default
+//! ----|-------------|----------
+//! `button` | `left`, `middle`, `right`, `up`, `down`, `forward`, `back` or [`double_left`](https://greshake.github.io/i3status-rust/i3status_rs/click/enum.MouseButton.html). | -
+//! `widget` | To which part of the block this entry applies | None
+//! `cmd` | Command to run when the mouse button event is detected. | None
+//! `action` | Which block action to trigger | None
+//! `sync` | Whether to wait for command to exit or not. | `false`
+//! `update` | Whether to update the block on click. | `false`
 
-use std::process::Command;
+mod prelude;
+
+use crate::BoxedFuture;
+use futures::future::FutureExt;
+use serde::de::{self, Deserialize};
+use tokio::sync::mpsc;
+
+use std::borrow::Cow;
+use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
-use crossbeam_channel::Sender;
-use serde::de::{self, Deserialize, DeserializeOwned};
-use toml::value::Value;
-
+use crate::click::MouseButton;
 use crate::config::SharedConfig;
 use crate::errors::*;
-use crate::protocol::i3bar_event::I3BarEvent;
-use crate::scheduler::Task;
-use crate::widgets::I3BarWidget;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Update {
-    Every(Duration),
-    Once,
-}
-
-impl Default for Update {
-    fn default() -> Self {
-        Update::Once
-    }
-}
-
-impl From<Duration> for Update {
-    fn from(d: Duration) -> Update {
-        Update::Every(d)
-    }
-}
-
-/// The ConfigBlock trait combines a constructor (new(...)) and an associated configuration type
-/// to form a block that can be instantiated from a piece of TOML (from the block configuration).
-/// The associated type has to be a deserializable struct, which you can then use to get your
-/// configurations from. The template shows you how to instantiate a simple Text widget.
-/// For more info on how to use widgets, just look into other Blocks. More documentation to come.
-///
-/// The sender object can be used to send asynchronous update request for any block from a separate
-/// thread, provide you know the Block's ID. This advanced feature can be used to reduce
-/// the number of system calls by asynchronously waiting for events. A usage example can be found
-/// in the Music block, which updates only when dbus signals a new song.
-pub trait ConfigBlock: Block {
-    type Config: DeserializeOwned;
-
-    /// Creates a new block from the relevant configuration.
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        update_request: Sender<Task>,
-    ) -> Result<Self>
-    where
-        Self: Sized;
-
-    /// TODO: write documentation
-    fn override_on_click(&mut self) -> Option<&mut Option<String>> {
-        None
-    }
-}
-
-/// The Block trait is used to interact with a block after it has been instantiated from ConfigBlock.
-pub trait Block {
-    /// The name of the block.
-    ///
-    /// This name will be shown to the user when an error occurs.
-    fn name(&self) -> &'static str;
-
-    /// Use this function to return the widgets that comprise the UI of your component.
-    ///
-    /// The music block may, for example, be comprised of a text widget and multiple
-    /// buttons (buttons are also TextWidgets). Use a vec to wrap the references to your view.
-    fn view(&self) -> Vec<&dyn I3BarWidget>;
-
-    /// Required if you don't want a static block.
-    ///
-    /// Use this function to update the internal state of your block, for example during
-    /// periodic updates. Return the duration until your block wants to be updated next.
-    /// For example, a clock could request only to be updated every 60 seconds by returning
-    /// Some(Update::Every(Duration::new(60, 0))) every time. If you return None,
-    /// this function will not be called again automatically.
-    fn update(&mut self) -> Result<Option<Update>> {
-        Ok(None)
-    }
-
-    /// Sends click events to the block.
-    ///
-    /// Here you can react to the user clicking your block. The I3BarEvent instance contains all
-    /// fields to describe the click action, including mouse button.
-    /// You may also update the internal state here.
-    ///
-    /// If block uses more that one widget, use the event.instance property to determine which widget was clicked.
-    fn click(&mut self, _event: &I3BarEvent) -> Result<()> {
-        Ok(())
-    }
-}
+use crate::widget::Widget;
+use crate::{Request, RequestCmd};
 
 macro_rules! define_blocks {
     {
-        $( $(#[cfg($attr: meta)])? $block: ident :: $block_type : ident $(,)? )*
+        $( $(#[cfg(feature = $feat: literal)])? $block: ident $(,)? )*
     } => {
         $(
-            $(#[cfg($attr)])?
+            $(#[cfg(feature = $feat)])?
+            $(#[cfg_attr(docsrs, doc(cfg(feature = $feat)))])?
             pub mod $block;
         )*
 
-        #[derive(Debug, Clone, Copy)]
-        pub enum BlockType {
+        #[derive(Debug)]
+        pub enum BlockConfig {
             $(
-                $(#[cfg($attr)])?
+                $(#[cfg(feature = $feat)])?
                 #[allow(non_camel_case_types)]
-                $block,
+                $block($block::Config),
             )*
+            Err(Option<&'static str>, Error),
         }
 
-        impl BlockType {
-            pub fn create_block(
-                self,
-                id: usize,
-                block_config: Value,
-                shared_config: SharedConfig,
-                update_request: Sender<Task>,
-            ) -> Result<Option<(Box<dyn Block>, BlockHandlers)>>
-            {
+        impl BlockConfig {
+            pub fn name(&self) -> &'static str {
                 match self {
                     $(
-                        $(#[cfg($attr)])?
-                        Self::$block => {
-                            create_block_typed::<$block::$block_type>(id, block_config, shared_config, update_request)
-                        }
+                        $(#[cfg(feature = $feat)])?
+                        Self::$block { .. } => stringify!($block),
                     )*
+                    Self::Err(Some(name), _err) => name,
+                    Self::Err(None, _err) => "???",
                 }
             }
 
-            pub fn name(
-                self,
-            ) -> &'static str
-            {
+            pub fn run(self, api: CommonApi) -> BlockFuture {
+                let id = api.id;
                 match self {
                     $(
-                        $(#[cfg($attr)])?
-                        Self::$block => {
-                            stringify!($block)
-                        }
+                        $(#[cfg(feature = $feat)])?
+                        Self::$block(config) => $block::run(config, api).map(move |e| e.in_block(stringify!($block), id)).boxed_local(),
                     )*
+                    Self::Err(name, err) => {
+                        std::future::ready(Err(Error {
+                            kind: ErrorKind::Config,
+                            message: None,
+                            cause: Some(Arc::new(err)),
+                            block: Some((name.unwrap_or("???"), id)),
+                        })).boxed_local()
+                    },
                 }
             }
         }
 
-        impl<'de> Deserialize<'de> for BlockType {
+        impl<'de> Deserialize<'de> for BlockConfig {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
                 D: de::Deserializer<'de>,
             {
-                struct Visitor;
+                use de::Error;
 
-                impl<'de> de::Visitor<'de> for Visitor {
-                    type Value = BlockType;
+                let mut table = toml::Table::deserialize(deserializer)?;
+                let block_name = table.remove("block").ok_or_else(|| D::Error::missing_field("block"))?;
+                let block_name = block_name.as_str().ok_or_else(|| D::Error::custom("block must be a string"))?;
 
-                    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                        formatter.write_str("a block name")
-                    }
-
-                    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-                    where
-                        E: de::Error,
-                    {
-                        match v {
-                            $(
-                            $(#[cfg($attr)])?
-                            stringify!($block) => Ok(BlockType::$block),
-                            $(
-                            #[cfg(not($attr))]
-                            stringify!($block) => Err(E::custom(format!("Block '{}' has to be enabled at the compile time", stringify!($block)))),
-                            )?
-                            )*
-                            unknown => Err(E::custom(format!("Unknown block '{unknown}'")))
+                match block_name {
+                    $(
+                        $(#[cfg(feature = $feat)])?
+                        stringify!($block) => match $block::Config::deserialize(table) {
+                            Ok(config) => Ok(BlockConfig::$block(config)),
+                            Err(err) => Ok(BlockConfig::Err(Some(stringify!($block)), crate::errors::Error::new(err.to_string()))),
                         }
-                    }
+                        $(
+                            #[cfg(not(feature = $feat))]
+                            stringify!($block) => Ok(BlockConfig::Err(
+                                Some(stringify!($block)),
+                                crate::errors::Error::new(format!(
+                                    "this block is behind a feature gate '{}' which must be enabled at compile time",
+                                    $feat,
+                                )),
+                            )),
+                        )?
+                    )*
+                    other => Err(D::Error::custom(format!("unknown block '{other}'")))
                 }
-
-                deserializer.deserialize_str(Visitor)
             }
         }
-
     };
 }
 
-// Please keep these in alphabetical order.
 define_blocks!(
-    apt::Apt,
-    backlight::Backlight,
-    battery::Battery,
-    bluetooth::Bluetooth,
-    cpu::Cpu,
-    custom::Custom,
-    custom_dbus::CustomDBus,
-    disk_space::DiskSpace,
-    dnf::Dnf,
-    docker::Docker,
-    external_ip::ExternalIP,
-    focused_window::FocusedWindow,
-    github::Github,
-    hueshift::Hueshift,
-    ibus::IBus,
-    kdeconnect::KDEConnect,
-    keyboard_layout::KeyboardLayout,
-    load::Load,
+    amd_gpu,
+    apt,
+    backlight,
+    battery,
+    bluetooth,
+    cpu,
+    custom,
+    custom_dbus,
+    disk_space,
+    dnf,
+    docker,
+    external_ip,
+    focused_window,
+    github,
+    hueshift,
+    kdeconnect,
+    load,
     #[cfg(feature = "maildir")]
-    maildir::Maildir,
-    memory::Memory,
-    music::Music,
-    net::Net,
-    networkmanager::NetworkManager,
-    notify::Notify,
+    maildir,
+    menu,
+    memory,
+    music,
+    net,
+    notify,
     #[cfg(feature = "notmuch")]
-    notmuch::Notmuch,
-    nvidia_gpu::NvidiaGpu,
-    pacman::Pacman,
-    pomodoro::Pomodoro,
-    rofication::Rofication,
-    sound::Sound,
-    speedtest::SpeedTest,
-    taskwarrior::Taskwarrior,
-    temperature::Temperature,
-    time::Time,
-    toggle::Toggle,
-    uptime::Uptime,
-    watson::Watson,
-    weather::Weather,
-    xrandr::Xrandr,
+    notmuch,
+    nvidia_gpu,
+    pacman,
+    pomodoro,
+    rofication,
+    service_status,
+    sound,
+    speedtest,
+    keyboard_layout,
+    taskwarrior,
+    temperature,
+    time,
+    tea_timer,
+    toggle,
+    uptime,
+    vpn,
+    watson,
+    weather,
+    xrandr,
 );
 
-pub struct BlockHandlers {
-    pub signal: Option<i32>,
-    pub on_click: Option<String>,
+pub type BlockFuture = BoxedFuture<Result<()>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockEvent {
+    Action(Cow<'static, str>),
+    UpdateRequest,
 }
 
-pub fn create_block_typed<B>(
-    id: usize,
-    mut block_config: Value,
-    mut shared_config: SharedConfig,
-    update_request: Sender<Task>,
-) -> Result<Option<(Box<dyn Block>, BlockHandlers)>>
-where
-    B: ConfigBlock + 'static,
-{
-    // Extract base(common) config
-    let common_config = BaseBlockConfig::extract(&mut block_config);
-    let mut common_config = BaseBlockConfig::deserialize(common_config)
-        .error_msg("Failed to deserialize common block config")?;
+pub struct CommonApi {
+    pub(crate) id: usize,
+    pub(crate) shared_config: SharedConfig,
+    pub(crate) event_receiver: mpsc::Receiver<BlockEvent>,
+    pub(crate) request_sender: mpsc::Sender<Request>,
+    pub(crate) error_interval: Duration,
+}
 
-    // Run if_command if present
-    if let Some(ref cmd) = common_config.if_command {
-        if !Command::new("sh")
-            .args(["-c", cmd])
-            .output()
-            .map_or(false, |o| o.status.success())
-        {
-            return Ok(None);
+impl CommonApi {
+    /// Sends the widget to be displayed.
+    pub async fn set_widget(&self, widget: Widget) -> Result<()> {
+        self.request_sender
+            .send(Request {
+                block_id: self.id,
+                cmd: RequestCmd::SetWidget(widget),
+            })
+            .await
+            .error("Failed to send Request")
+    }
+
+    /// Hides the block. Send new widget to make it visible again.
+    pub async fn hide(&self) -> Result<()> {
+        self.request_sender
+            .send(Request {
+                block_id: self.id,
+                cmd: RequestCmd::UnsetWidget,
+            })
+            .await
+            .error("Failed to send Request")
+    }
+
+    /// Sends the error to be displayed.
+    pub async fn set_error(&self, error: Error) -> Result<()> {
+        self.request_sender
+            .send(Request {
+                block_id: self.id,
+                cmd: RequestCmd::SetError(error),
+            })
+            .await
+            .error("Failed to send Request")
+    }
+
+    pub async fn set_default_actions(
+        &mut self,
+        actions: &'static [(MouseButton, Option<&'static str>, &'static str)],
+    ) -> Result<()> {
+        self.request_sender
+            .send(Request {
+                block_id: self.id,
+                cmd: RequestCmd::SetDefaultActions(actions),
+            })
+            .await
+            .error("Failed to send Request")
+    }
+
+    /// Receive the next event, such as click notification or update request.
+    ///
+    /// This method should be called regularly to avoid sender blocking. Currently, the runtime is
+    /// single threaded, so full channel buffer will cause a deadlock. If receiving events is
+    /// impossible / meaningless, call `event_receiver.close()`.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe.
+    ///
+    /// # Panics
+    ///
+    /// Panics if event sender is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// tokio::select! {
+    ///     _ = timer.tick() => (),
+    ///     event = api.event() => match event {
+    ///         // ...
+    ///         _ => (),
+    ///     }
+    /// }
+    /// ```
+    pub async fn event(&mut self) -> BlockEvent {
+        match self.event_receiver.recv().await {
+            Some(event) => event,
+            None => panic!("events stream ended"),
         }
     }
 
-    // Apply theme overrides if presented
-    if let Some(ref overrides) = common_config.theme_overrides {
-        shared_config.theme_override(overrides)?;
-    }
-    if let Some(overrides) = common_config.icons_format {
-        shared_config.icons_format_override(overrides);
-    }
-    if let Some(overrides) = common_config.icons_overrides {
-        shared_config.icons_override(overrides);
+    /// Wait for the next update request.
+    ///
+    /// The update request can be send by clicking on the block (with `update=true`) or sending a
+    /// signal.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe.
+    ///
+    /// # Panics
+    ///
+    /// Panics if event sender is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// tokio::select! {
+    ///     _ = timer.tick() => (),
+    ///     _ = api.wait_for_update_request() => (),
+    /// }
+    /// ```
+    pub async fn wait_for_update_request(&mut self) {
+        while self.event().await != BlockEvent::UpdateRequest {}
     }
 
-    // Extract block-specific config
-    let block_config = <B as ConfigBlock>::Config::deserialize(block_config)
-        .error_msg("Failed to deserialize block config")?;
-
-    let mut block = B::new(id, block_config, shared_config, update_request)?;
-    if let Some(overrided) = block.override_on_click() {
-        *overrided = common_config.on_click.take();
+    pub fn get_icon(&self, icon: &str) -> Result<String> {
+        self.shared_config
+            .get_icon(icon, None)
+            .or_error(|| format!("Icon '{icon}' not found"))
     }
 
-    Ok(Some((
-        Box::new(block),
-        BlockHandlers {
-            signal: common_config.signal,
-            on_click: common_config.on_click,
-        },
-    )))
+    pub fn get_icon_in_progression(&self, icon: &str, value: f64) -> Result<String> {
+        self.shared_config
+            .get_icon(icon, Some(value))
+            .or_error(|| format!("Icon '{icon}' not found"))
+    }
+
+    pub fn get_icon_in_progression_bound(
+        &self,
+        icon: &str,
+        value: f64,
+        low: f64,
+        high: f64,
+    ) -> Result<String> {
+        self.get_icon_in_progression(icon, (value.clamp(low, high) - low) / (high - low))
+    }
+
+    /// Repeatedly call provided async function until it succeeds.
+    ///
+    /// This function will call `f` in a loop. If it succeeds, the result will be returned.
+    /// Otherwise, the block will enter error mode: "X" will be shown and on left click the error
+    /// message will be shown.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let status = api.recoverable(|| Status::new(&*socket_path)).await?;
+    /// ```
+    pub async fn recoverable<Fn, Fut, T>(&mut self, mut f: Fn) -> Result<T>
+    where
+        Fn: FnMut() -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        loop {
+            match f().await {
+                Ok(res) => return Ok(res),
+                Err(err) => {
+                    self.set_error(err).await?;
+                    tokio::select! {
+                        _ = tokio::time::sleep(self.error_interval) => (),
+                        _ = self.wait_for_update_request() => (),
+                    }
+                }
+            }
+        }
+    }
 }

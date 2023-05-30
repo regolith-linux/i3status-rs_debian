@@ -1,147 +1,156 @@
+//! A Toggle block
+//!
+//! You can add commands to be executed to disable the toggle (`command_off`), and to enable it
+//! (`command_on`). If these command exit with a non-zero status, the block will not be toggled and
+//! the block state will be changed to give a visual warning of the failure. You also need to
+//! specify a command to determine the state of the toggle (`command_state`). When the command outputs
+//! nothing, the toggle is disabled, otherwise enabled. By specifying the interval property you can
+//! let the command_state be executed continuously.
+//!
+//! To run those commands, the shell form `$SHELL` environment variable is used. If such variable
+//! is not presented, `sh` is used.
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `format` | A string to customise the output of this block. See below for available placeholders | `" $icon "`
+//! `command_on` | Shell command to enable the toggle | Yes | N/A
+//! `command_off` | Shell command to disable the toggle | Yes | N/A
+//! `command_state` | Shell command to determine the state. Empty output => No, otherwise => Yes. | **Required**
+//! `icon_on` | Icon override for the toggle button while on | `"toggle_on"`
+//! `icon_off` | Icon override for the toggle button while off | `"toggle_off"`
+//! `interval` | Update interval in seconds. If not set, `command_state` will run only on click. | None
+//!
+//! Placeholder   | Value                                       | Type   | Unit
+//! --------------|---------------------------------------------|--------|-----
+//! `icon`        | Icon based on toggle's state                | Icon   | -
+//!
+//! Action   | Default button
+//! ---------|---------------
+//! `toggle` | Left
+//!
+//! # Examples
+//!
+//! This is what can be used to toggle an external monitor configuration:
+//!
+//! ```toml
+//! [[block]]
+//! block = "toggle"
+//! format = " $icon 4k "
+//! command_state = "xrandr | grep 'DP1 connected 38' | grep -v eDP1"
+//! command_on = "~/.screenlayout/4kmon_default.sh"
+//! command_off = "~/.screenlayout/builtin.sh"
+//! interval = 5
+//! ```
+//!
+//! # Icons Used
+//! - `toggle_off`
+//! - `toggle_on`
+
+use super::prelude::*;
 use std::env;
-use std::process::Command;
-use std::time::Duration;
+use tokio::process::Command;
 
-use crossbeam_channel::Sender;
-use serde_derive::Deserialize;
-
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::de::deserialize_opt_duration;
-use crate::errors::*;
-use crate::protocol::i3bar_event::I3BarEvent;
-use crate::scheduler::Task;
-use crate::widgets::text::TextWidget;
-use crate::widgets::{I3BarWidget, State};
-
-pub struct Toggle {
-    text: TextWidget,
-    command_on: String,
-    command_off: String,
-    command_state: String,
-    icon_on: String,
-    icon_off: String,
-    update_interval: Option<Duration>,
-    toggled: bool,
-}
-
-#[derive(Deserialize, Debug, Default, Clone)]
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct ToggleConfig {
-    /// Update interval in seconds
-    #[serde(default, deserialize_with = "deserialize_opt_duration")]
-    pub interval: Option<Duration>,
-
-    /// Shell Command to enable the toggle
+pub struct Config {
+    pub format: FormatConfig,
     pub command_on: String,
-
-    /// Shell Command to disable the toggle
     pub command_off: String,
-
-    /// Shell Command to determine toggle state. <br/>Empty output => off. Any output => on.
     pub command_state: String,
-
-    /// Icon ID when toggled on (default is "toggle_on")
-    #[serde(default = "ToggleConfig::default_icon_on")]
-    pub icon_on: String,
-
-    /// Icon ID when toggled off (default is "toggle_off")
-    #[serde(default = "ToggleConfig::default_icon_off")]
-    pub icon_off: String,
-
-    /// Text to display in i3bar for this block
-    pub text: Option<String>,
+    #[serde(default)]
+    pub icon_on: Option<String>,
+    #[serde(default)]
+    pub icon_off: Option<String>,
+    #[serde(default)]
+    pub interval: Option<u64>,
 }
 
-impl ToggleConfig {
-    fn default_icon_on() -> String {
-        "toggle_on".to_owned()
-    }
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    api.set_default_actions(&[(MouseButton::Left, None, "toggle")])
+        .await?;
 
-    fn default_icon_off() -> String {
-        "toggle_off".to_owned()
-    }
-}
+    let interval = config.interval.map(Duration::from_secs);
+    let mut widget = Widget::new().with_format(config.format.with_default(" $icon ")?);
 
-impl ConfigBlock for Toggle {
-    type Config = ToggleConfig;
+    let icon_on = config.icon_on.unwrap_or_else(|| "toggle_on".into());
+    let icon_off = config.icon_off.unwrap_or_else(|| "toggle_off".into());
 
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        _tx_update_request: Sender<Task>,
-    ) -> Result<Self> {
-        Ok(Toggle {
-            text: TextWidget::new(id, 0, shared_config)
-                .with_text(&block_config.text.unwrap_or_default()),
-            command_on: block_config.command_on,
-            command_off: block_config.command_off,
-            command_state: block_config.command_state,
-            icon_on: block_config.icon_on,
-            icon_off: block_config.icon_off,
-            toggled: false,
-            update_interval: block_config.interval,
-        })
-    }
-}
+    let shell = env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
 
-impl Block for Toggle {
-    fn name(&self) -> &'static str {
-        "toggle"
-    }
-
-    fn update(&mut self) -> Result<Option<Update>> {
-        let output = Command::new(env::var("SHELL").unwrap_or_else(|_| "sh".to_owned()))
-            .args(&["-c", &self.command_state])
+    loop {
+        // Check state
+        let output = Command::new(&shell)
+            .args(["-c", &config.command_state])
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-            .unwrap_or_else(|e| e.to_string());
+            .await
+            .error("Failed to run command_state")?;
+        let is_toggled = !std::str::from_utf8(&output.stdout)
+            .error("The output of command_state is invalid UTF-8")?
+            .trim()
+            .is_empty();
 
-        self.text.set_icon(match output.trim_start() {
-            "" => {
-                self.toggled = false;
-                self.icon_off.as_str()
+        widget.set_values(map!(
+            "icon" => Value::icon(
+                api.get_icon(if is_toggled { &icon_on } else { &icon_off })?
+            )
+        ));
+        api.set_widget(widget.clone()).await?;
+
+        // TODO: try not to duplicate code
+        loop {
+            match interval {
+                Some(interval) => {
+                    select! {
+                        _ = sleep(interval) => break,
+                        event = api.event() => match event {
+                            UpdateRequest => break,
+                            Action(a) if a == "toggle" => {
+                                let cmd = if is_toggled {
+                                    &config.command_off
+                                } else {
+                                    &config.command_on
+                                };
+                                let output = Command::new(&shell)
+                                    .args(["-c", cmd])
+                                    .output()
+                                    .await
+                                    .error("Failed to run command")?;
+                                if output.status.success() {
+                                    widget.state = State::Idle;
+                                    break;
+                                } else {
+                                    widget.state = State::Critical;
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+                None => match api.event().await {
+                    UpdateRequest => break,
+                    Action(a) if a == "toggle" => {
+                        let cmd = if is_toggled {
+                            &config.command_off
+                        } else {
+                            &config.command_on
+                        };
+                        let output = Command::new(&shell)
+                            .args(["-c", cmd])
+                            .output()
+                            .await
+                            .error("Failed to run command")?;
+                        if output.status.success() {
+                            widget.state = State::Idle;
+                            break;
+                        } else {
+                            widget.state = State::Critical;
+                        }
+                    }
+                    _ => (),
+                },
             }
-            _ => {
-                self.toggled = true;
-                self.icon_on.as_str()
-            }
-        })?;
-
-        self.text.set_state(State::Idle);
-
-        Ok(self.update_interval.map(|d| d.into()))
-    }
-
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![&self.text]
-    }
-
-    fn click(&mut self, _e: &I3BarEvent) -> Result<()> {
-        let cmd = if self.toggled {
-            &self.command_off
-        } else {
-            &self.command_on
-        };
-
-        let output = Command::new(env::var("SHELL").unwrap_or_else(|_| "sh".to_owned()))
-            .args(&["-c", cmd])
-            .output()
-            .error_msg( "failed to run toggle command")?;
-
-        if output.status.success() {
-            self.text.set_state(State::Idle);
-            self.toggled = !self.toggled;
-            self.text.set_icon(if self.toggled {
-                self.icon_on.as_str()
-            } else {
-                self.icon_off.as_str()
-            })?
-        } else {
-            self.text.set_state(State::Critical);
-        };
-
-        Ok(())
+        }
     }
 }

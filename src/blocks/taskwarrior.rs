@@ -1,33 +1,162 @@
-use std::process::Command;
-use std::thread;
-use std::time::{Duration, Instant};
+//! The number of tasks from the taskwarrior list
+//!
+//! Clicking the right mouse button on the icon cycles the view of the block through the user's filters.
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `interval` | Update interval in seconds | `600` (10min)
+//! `warning_threshold` | The threshold of pending (or started) tasks when the block turns into a warning state | `10`
+//! `critical_threshold` | The threshold of pending (or started) tasks when the block turns into a critical state | `20`
+//! `filters` | A list of tables with the keys `name` and `filter`. `filter` specifies the criteria that must be met for a task to be counted towards this filter. | ```[{name = "pending", filter = "-COMPLETED -DELETED"}]```
+//! `format` | A string to customise the output of this block. See below for available placeholders. | `" $icon $count.eng(w:1) "`
+//! `format_singular` | Same as `format` but for when exactly one task is pending. | `" $icon $count.eng(w:1) "`
+//! `format_everything_done` | Same as `format` but for when all tasks are completed. | `" $icon $count.eng(w:1) "`
+//! `data_location`| Directory in which taskwarrior stores its data files. Supports path expansions e.g. `~`. | `"~/.task"`
+//!
+//! Placeholder   | Value                                       | Type   | Unit
+//! --------------|---------------------------------------------|--------|-----
+//! `icon`        | A static icon                               | Icon   | -
+//! `count`       | The number of tasks matching current filter | Number | -
+//! `filter_name` | The name of current filter                  | Text   | -
+//!
+//! Action        | Default button
+//! --------------|---------------
+//! `next_filter` | Right
+//!
+//! # Example
+//!
+//! In this example, block will be hidden if `count` is zero.
+//!
+//! ```toml
+//! [[block]]
+//! block = "taskwarrior"
+//! interval = 60
+//! format = " $icon count.eng(w:1) tasks "
+//! format_singular = " $icon 1 task "
+//! format_everything_done = ""
+//! warning_threshold = 10
+//! critical_threshold = 20
+//! [[block.filters]]
+//! name = "today"
+//! filter = "+PENDING +OVERDUE or +DUETODAY"
+//! [[block.filters]]
+//! name = "some-project"
+//! filter = "project:some-project +PENDING"
+//! ```
+//!
+//! # Icons Used
+//! - `tasks`
 
-use crossbeam_channel::Sender;
-use serde_derive::Deserialize;
+use super::prelude::*;
+use inotify::{Inotify, WatchMask};
+use tokio::process::Command;
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::de::deserialize_duration;
-use crate::errors::*;
-use crate::formatting::value::Value;
-use crate::formatting::FormatTemplate;
-use crate::protocol::i3bar_event::{I3BarEvent, MouseButton};
-use crate::scheduler::Task;
-use crate::util::expand_string;
-use crate::widgets::text::TextWidget;
-use crate::widgets::{I3BarWidget, State};
-use inotify::{EventMask, Inotify, WatchMask};
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields, default)]
+pub struct Config {
+    pub interval: Seconds,
+    pub warning_threshold: u32,
+    pub critical_threshold: u32,
+    pub filters: Vec<Filter>,
+    pub format: FormatConfig,
+    pub format_singular: FormatConfig,
+    pub format_everything_done: FormatConfig,
+    pub data_location: ShellString,
+}
 
-pub struct Taskwarrior {
-    output: TextWidget,
-    update_interval: Duration,
-    warning_threshold: u32,
-    critical_threshold: u32,
-    filters: Vec<Filter>,
-    filter_index: usize,
-    format: FormatTemplate,
-    format_singular: FormatTemplate,
-    format_everything_done: FormatTemplate,
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            interval: Seconds::new(600),
+            warning_threshold: 10,
+            critical_threshold: 20,
+            filters: vec![Filter {
+                name: "pending".into(),
+                filter: "-COMPLETED -DELETED".into(),
+            }],
+            format: default(),
+            format_singular: default(),
+            format_everything_done: default(),
+            data_location: ShellString::new("~/.task"),
+        }
+    }
+}
+
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    api.set_default_actions(&[(MouseButton::Right, None, "next_filter")])
+        .await?;
+
+    let format = config.format.with_default(" $icon $count.eng(w:1) ")?;
+    let format_singular = config
+        .format_singular
+        .with_default(" $icon $count.eng(w:1) ")?;
+    let format_everything_done = config
+        .format_everything_done
+        .with_default(" $icon $count.eng(w:1) ")?;
+
+    let mut filters = config.filters.iter().cycle();
+    let mut filter = filters.next().error("`filters` is empty")?;
+
+    let mut notify = Inotify::init().error("Failed to start inotify")?;
+    notify
+        .add_watch(&*config.data_location.expand()?, WatchMask::MODIFY)
+        .error("Failed to watch data location")?;
+    let mut updates = notify
+        .event_stream([0; 1024])
+        .error("Failed to create event stream")?;
+
+    loop {
+        let number_of_tasks = get_number_of_tasks(&filter.filter).await?;
+
+        let mut widget = Widget::new();
+
+        widget.set_format(match number_of_tasks {
+            0 => format_everything_done.clone(),
+            1 => format_singular.clone(),
+            _ => format.clone(),
+        });
+
+        widget.set_values(map! {
+            "icon" => Value::icon(api.get_icon("tasks")?),
+            "count" => Value::number(number_of_tasks),
+            "filter_name" => Value::text(filter.name.clone()),
+        });
+
+        widget.state = match number_of_tasks {
+            x if x >= config.critical_threshold => State::Critical,
+            x if x >= config.warning_threshold => State::Warning,
+            _ => State::Idle,
+        };
+
+        api.set_widget(widget).await?;
+
+        select! {
+            _ = sleep(config.interval.0) =>(),
+            _ = updates.next() => (),
+            event = api.event() => match event {
+                Action(a) if a == "next_filter" => {
+                    filter = filters.next().unwrap();
+                }
+                _ => (),
+            }
+        }
+    }
+}
+
+async fn get_number_of_tasks(filter: &str) -> Result<u32> {
+    let output = Command::new("task")
+        .args(["rc.gc=off", filter, "count"])
+        .output()
+        .await
+        .error("failed to run taskwarrior for getting the number of tasks")?
+        .stdout;
+    std::str::from_utf8(&output)
+        .error("failed to get the number of tasks from taskwarrior (invalid UTF-8)")?
+        .trim()
+        .parse::<u32>()
+        .error("could not parse the result of taskwarrior")
 }
 
 #[derive(Deserialize, Debug, Default, Clone)]
@@ -35,231 +164,4 @@ pub struct Taskwarrior {
 pub struct Filter {
     pub name: String,
     pub filter: String,
-}
-
-impl Filter {
-    pub fn new(name: String, filter: String) -> Self {
-        Filter { name, filter }
-    }
-
-    pub fn legacy(name: String, tags: &[String]) -> Self {
-        let tags = tags
-            .iter()
-            .map(|element| format!("+{}", element))
-            .collect::<Vec<String>>()
-            .join(" ");
-        let filter = format!("-COMPLETED -DELETED {}", tags);
-        Self::new(name, filter)
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields, default)]
-pub struct TaskwarriorConfig {
-    /// Update interval in seconds
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub interval: Duration,
-
-    /// Threshold from which on the block is marked with a warning indicator
-    pub warning_threshold: u32,
-
-    /// Threshold from which on the block is marked with a critical indicator
-    pub critical_threshold: u32,
-
-    /// A list of tags a task has to have before it's used for counting pending tasks
-    /// (DEPRECATED) use filters instead
-    pub filter_tags: Vec<String>,
-
-    /// A list of named filter criteria which must be fulfilled to be counted towards
-    /// the total, when that filter is active.
-    pub filters: Vec<Filter>,
-
-    /// Format override
-    pub format: FormatTemplate,
-
-    /// Format override if the count is one
-    pub format_singular: FormatTemplate,
-
-    /// Format override if the count is zero
-    pub format_everything_done: FormatTemplate,
-
-    /// Data directory. Defaults to ~/.task but it's configurable in taskwarrior
-    /// (data.location in .taskrc) so make it configurable here, too
-    pub data_location: String,
-}
-
-impl Default for TaskwarriorConfig {
-    fn default() -> Self {
-        Self {
-            interval: Duration::from_secs(600),
-            warning_threshold: 10,
-            critical_threshold: 20,
-            filter_tags: vec![],
-            filters: vec![Filter::new(
-                "pending".to_string(),
-                "-COMPLETED -DELETED".to_string(),
-            )],
-            format: FormatTemplate::default(),
-            format_singular: FormatTemplate::default(),
-            format_everything_done: FormatTemplate::default(),
-            data_location: "~/.task".to_string(),
-        }
-    }
-}
-
-impl ConfigBlock for Taskwarrior {
-    type Config = TaskwarriorConfig;
-
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        tx_update_request: Sender<Task>,
-    ) -> Result<Self> {
-        let output = TextWidget::new(id, 0, shared_config)
-            .with_icon("tasks")?
-            .with_text("-");
-        // If the deprecated `filter_tags` option has been set,
-        // convert it to the new `filter` format.
-        let filters = if !block_config.filter_tags.is_empty() {
-            vec![
-                Filter::legacy("filtered".to_string(), &block_config.filter_tags),
-                Filter::legacy("all".to_string(), &[]),
-            ]
-        } else {
-            block_config.filters
-        };
-
-        let data_location = block_config.data_location.clone();
-        let data_location = expand_string(&data_location)?;
-
-        // Spin up a thread to watch for changes to the task directory (~/.task)
-        // and schedule an update if needed.
-        thread::Builder::new()
-            .name("taskwarrior".into())
-            .spawn(move || {
-                let mut notify = Inotify::init().expect("Failed to start inotify");
-                notify
-                    .add_watch(data_location, WatchMask::MODIFY)
-                    .expect("Failed to watch task directory");
-
-                let mut buffer = [0; 1024];
-                loop {
-                    let mut events = notify
-                        .read_events_blocking(&mut buffer)
-                        .expect("Error while reading inotify events");
-
-                    if events.any(|event| event.mask.contains(EventMask::MODIFY)) {
-                        tx_update_request
-                            .send(Task {
-                                id,
-                                update_time: Instant::now(),
-                            })
-                            .unwrap();
-                    }
-
-                    // Avoid update spam.
-                    thread::sleep(Duration::from_millis(250))
-                }
-            })
-            .unwrap();
-
-        Ok(Taskwarrior {
-            update_interval: block_config.interval,
-            warning_threshold: block_config.warning_threshold,
-            critical_threshold: block_config.critical_threshold,
-            format: block_config.format.with_default("{count}")?,
-            format_singular: block_config.format_singular.with_default("{count}")?,
-            format_everything_done: block_config
-                .format_everything_done
-                .with_default("{count}")?,
-            filter_index: 0,
-            filters,
-            output,
-        })
-    }
-}
-
-fn has_taskwarrior() -> Result<bool> {
-    Ok(String::from_utf8(
-        Command::new("sh")
-            .args(&["-c", "type -P task"])
-            .output()
-            .error_msg("failed to start command to check for taskwarrior")?
-            .stdout,
-    )
-    .error_msg("failed to check for taskwarrior")?
-    .trim()
-        != "")
-}
-
-fn get_number_of_tasks(filter: &str) -> Result<u32> {
-    String::from_utf8(
-        Command::new("sh")
-            .args(&["-c", &format!("task rc.gc=off {} count", filter)])
-            .output()
-            .error_msg("failed to run taskwarrior for getting the number of tasks")?
-            .stdout,
-    )
-    .error_msg("failed to get the number of tasks from taskwarrior")?
-    .trim()
-    .parse::<u32>()
-    .error_msg("could not parse the result of taskwarrior")
-}
-
-impl Block for Taskwarrior {
-    fn name(&self) -> &'static str {
-        "taskwarrior"
-    }
-
-    fn update(&mut self) -> Result<Option<Update>> {
-        if !has_taskwarrior()? {
-            self.output.set_text("?".to_string())
-        } else {
-            let filter = self.filters.get(self.filter_index).error_msg(format!(
-                "Filter at index {} does not exist",
-                self.filter_index
-            ))?;
-            let number_of_tasks = get_number_of_tasks(&filter.filter)?;
-            let values = map!(
-                "count" => Value::from_integer(number_of_tasks as i64),
-                "filter_name" => Value::from_string(filter.name.clone()),
-            );
-            self.output.set_texts(match number_of_tasks {
-                0 => self.format_everything_done.render(&values)?,
-                1 => self.format_singular.render(&values)?,
-                _ => self.format.render(&values)?,
-            });
-            if number_of_tasks >= self.critical_threshold {
-                self.output.set_state(State::Critical);
-            } else if number_of_tasks >= self.warning_threshold {
-                self.output.set_state(State::Warning);
-            } else {
-                self.output.set_state(State::Idle);
-            }
-        }
-
-        // continue updating the block in the configured interval
-        Ok(Some(self.update_interval.into()))
-    }
-
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![&self.output]
-    }
-
-    fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        match event.button {
-            MouseButton::Left => {
-                self.update()?;
-            }
-            MouseButton::Right => {
-                // Increment the filter_index, rotating at the end
-                self.filter_index = (self.filter_index + 1) % self.filters.len();
-                self.update()?;
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
 }

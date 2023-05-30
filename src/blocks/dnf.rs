@@ -1,165 +1,105 @@
-use std::process::Command;
-use std::time::Duration;
+//! Pending updates available for your Fedora system
+//!
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `interval` | Update interval in seconds. | `600`
+//! `format` | A string to customise the output of this block. See below for available placeholders. | `" $icon $count.eng(w:1) "`
+//! `format_singular` | Same as `format`, but for when exactly one update is available. | `" $icon $count.eng(w:1) "`
+//! `format_up_to_date` | Same as `format`, but for when no updates are available. | `" $icon $count.eng(w:1) "`
+//! `warning_updates_regex` | Display block as warning if updates matching regex are available. | `None`
+//! `critical_updates_regex` | Display block as critical if updates matching regex are available. | `None`
+//!
+//! Placeholder | Value                       | Type | Unit
+//! ------------|-----------------------------|--------|-----
+//! `icon`      | A static icon               | Icon   | -
+//! `count`     | Number of updates available | Number | -
+//!
+//! # Example
+//!
+//! Update the list of pending updates every thirty minutes (1800 seconds):
+//!
+//! ```toml
+//! [[block]]
+//! block = "dnf"
+//! interval = 1800
+//! format = " $icon $count.eng(w:1) updates available "
+//! format_singular = " $icon One update available "
+//! format_up_to_date = " $icon system up to date "
+//! critical_updates_regex = "(linux|linux-lts|linux-zen)"
+//! [[block.click]]
+//! # shows dmenu with cached available updates. Any dmenu alternative should also work.
+//! button = "left"
+//! cmd = "dnf list -q --upgrades | tail -n +2 | rofi -dmenu"
+//! ```
+//!
+//! # Icons Used
+//!
+//! - `update`
 
-use crossbeam_channel::Sender;
+use super::prelude::*;
 use regex::Regex;
-use serde_derive::Deserialize;
+use tokio::process::Command;
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::de::deserialize_duration;
-use crate::errors::*;
-use crate::formatting::value::Value;
-use crate::formatting::FormatTemplate;
-use crate::scheduler::Task;
-use crate::widgets::text::TextWidget;
-use crate::widgets::{I3BarWidget, State};
-
-pub struct Dnf {
-    output: TextWidget,
-    update_interval: Duration,
-    format: FormatTemplate,
-    format_singular: FormatTemplate,
-    format_up_to_date: FormatTemplate,
-    warning_updates_regex: Option<Regex>,
-    critical_updates_regex: Option<Regex>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, SmartDefault)]
 #[serde(deny_unknown_fields, default)]
-pub struct DnfConfig {
-    // Update interval in seconds
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub interval: Duration,
-
-    /// Format override
-    pub format: FormatTemplate,
-
-    /// Alternative format override for when exactly 1 update is available
-    pub format_singular: FormatTemplate,
-
-    /// Alternative format override for when no updates are available
-    pub format_up_to_date: FormatTemplate,
-
-    /// Indicate a `warning` state for the block if any pending update match the
-    /// following regex. Default behaviour is that no package updates are deemed
-    /// warning
+pub struct Config {
+    #[default(600.into())]
+    pub interval: Seconds,
+    pub format: FormatConfig,
+    pub format_singular: FormatConfig,
+    pub format_up_to_date: FormatConfig,
     pub warning_updates_regex: Option<String>,
-
-    /// Indicate a `critical` state for the block if any pending update match the
-    /// following regex. Default behaviour is that no package updates are deemed
-    /// critical
     pub critical_updates_regex: Option<String>,
 }
 
-impl Default for DnfConfig {
-    fn default() -> Self {
-        Self {
-            interval: Duration::from_secs(600),
-            format: FormatTemplate::default(),
-            format_singular: FormatTemplate::default(),
-            format_up_to_date: FormatTemplate::default(),
-            warning_updates_regex: None,
-            critical_updates_regex: None,
-        }
-    }
-}
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    let format = config.format.with_default(" $icon $count.eng(w:1) ")?;
+    let format_singular = config
+        .format_singular
+        .with_default(" $icon $count.eng(w:1) ")?;
+    let format_up_to_date = config
+        .format_up_to_date
+        .with_default(" $icon $count.eng(w:1) ")?;
 
-fn unpack_regex(regex_str: Option<String>, errorstring: &'static str) -> Result<Option<Regex>> {
-    regex_str
+    let warning_updates_regex = config
+        .warning_updates_regex
         .as_deref()
         .map(Regex::new)
         .transpose()
-        .error_msg(errorstring)
-}
+        .error("invalid warning updates regex")?;
+    let critical_updates_regex = config
+        .critical_updates_regex
+        .as_deref()
+        .map(Regex::new)
+        .transpose()
+        .error("invalid critical updates regex")?;
 
-impl ConfigBlock for Dnf {
-    type Config = DnfConfig;
+    loop {
+        let mut widget = Widget::new();
 
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        _tx_update_request: Sender<Task>,
-    ) -> Result<Self> {
-        let output = TextWidget::new(id, 0, shared_config).with_icon("update")?;
+        let updates = get_updates_list().await?;
+        let count = get_update_count(&updates);
 
-        Ok(Dnf {
-            update_interval: block_config.interval,
-            format: block_config.format.with_default("{count:1}")?,
-            format_singular: block_config.format_singular.with_default("{count:1}")?,
-            format_up_to_date: block_config.format_up_to_date.with_default("{count:1}")?,
-            output,
-            warning_updates_regex: unpack_regex(
-                block_config.warning_updates_regex,
-                "invalid warning updates regex",
-            )?,
-            critical_updates_regex: unpack_regex(
-                block_config.critical_updates_regex,
-                "invalid critical updates regex",
-            )?,
-        })
-    }
-}
-
-fn get_updates_list() -> Result<String> {
-    String::from_utf8(
-        Command::new("sh")
-            .env("LC_LANG", "C")
-            .args(&["-c", "dnf check-update -q --skip-broken"])
-            .output()
-            .error_msg("Failure running dnf check-update")?
-            .stdout,
-    )
-    .error_msg("Failed to capture dnf output")
-}
-
-fn get_update_count(updates: &str) -> usize {
-    updates.lines().filter(|line| line.len() > 1).count()
-}
-
-fn has_warning_update(updates: &str, regex: &Regex) -> bool {
-    updates.lines().filter(|line| regex.is_match(line)).count() > 0
-}
-
-fn has_critical_update(updates: &str, regex: &Regex) -> bool {
-    updates.lines().filter(|line| regex.is_match(line)).count() > 0
-}
-
-impl Block for Dnf {
-    fn name(&self) -> &'static str {
-        "dnf"
-    }
-
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![&self.output]
-    }
-
-    fn update(&mut self) -> Result<Option<Update>> {
-        let (formatting_map, warning, critical, cum_count) = {
-            let updates_list = get_updates_list()?;
-            let count = get_update_count(&updates_list);
-            let formatting_map = map!(
-                "count" => Value::from_integer(count as i64)
-            );
-
-            let warning = self
-                .warning_updates_regex
-                .as_ref()
-                .map_or(false, |regex| has_warning_update(&updates_list, regex));
-            let critical = self
-                .critical_updates_regex
-                .as_ref()
-                .map_or(false, |regex| has_critical_update(&updates_list, regex));
-
-            (formatting_map, warning, critical, count)
-        };
-        self.output.set_texts(match cum_count {
-            0 => self.format_up_to_date.render(&formatting_map)?,
-            1 => self.format_singular.render(&formatting_map)?,
-            _ => self.format.render(&formatting_map)?,
+        widget.set_format(match count {
+            0 => format_up_to_date.clone(),
+            1 => format_singular.clone(),
+            _ => format.clone(),
         });
-        self.output.set_state(match cum_count {
+        widget.set_values(map!(
+            "icon" => Value::icon(api.get_icon("update")?),
+            "count" => Value::number(count)
+        ));
+
+        let warning = warning_updates_regex
+            .as_ref()
+            .map_or(false, |regex| has_matching_update(&updates, regex));
+        let critical = critical_updates_regex
+            .as_ref()
+            .map_or(false, |regex| has_matching_update(&updates, regex));
+        widget.state = match count {
             0 => State::Idle,
             _ => {
                 if critical {
@@ -170,7 +110,32 @@ impl Block for Dnf {
                     State::Info
                 }
             }
-        });
-        Ok(Some(self.update_interval.into()))
+        };
+
+        api.set_widget(widget).await?;
+
+        select! {
+            _ = sleep(config.interval.0) => (),
+            _ = api.wait_for_update_request() => (),
+        }
     }
+}
+
+async fn get_updates_list() -> Result<String> {
+    let stdout = Command::new("sh")
+        .env("LC_LANG", "C")
+        .args(["-c", "dnf check-update -q --skip-broken"])
+        .output()
+        .await
+        .error("Failed to run dnf check-update")?
+        .stdout;
+    String::from_utf8(stdout).error("dnf produced non-UTF8 output")
+}
+
+fn get_update_count(updates: &str) -> usize {
+    updates.lines().filter(|line| line.len() > 1).count()
+}
+
+fn has_matching_update(updates: &str, regex: &Regex) -> bool {
+    updates.lines().any(|line| regex.is_match(line))
 }

@@ -1,128 +1,113 @@
-use std::collections::HashMap;
-use std::convert::TryInto;
-use std::time::Duration;
+//! The current time.
+//!
+//! # Configuration
+//!
+//! Key        | Values | Default
+//! -----------|--------|--------
+//! `format`   | Format string. See [chrono docs](https://docs.rs/chrono/0.3.0/chrono/format/strftime/index.html#specifiers) for all options. | `" $icon $timestamp.datetime() "`
+//! `interval` | Update interval in seconds | `10`
+//! `timezone` | A timezone specifier (e.g. "Europe/Lisbon") | Local timezone
+//!
+//! Placeholder   | Value                                       | Type     | Unit
+//! --------------|---------------------------------------------|----------|-----
+//! `icon`        | A static icon                               | Icon     | -
+//! `timestamp`   | The current time                            | Datetime | -
+//!
+//! Action          | Default button
+//! ----------------|---------------
+//! `next_timezone` | Left
+//! `prev_timezone` | Right
+//!
+//! # Example
+//!
+//! ```toml
+//! [[block]]
+//! block = "time"
+//! interval = 60
+//! [block.format]
+//! full = " $icon $timestamp.datetime(f:'%a %Y-%m-%d %R %Z', l:fr_BE) "
+//! short = " $icon $timestamp.datetime(f:%R) "
+//! ```
+//!
+//! # Icons Used
+//! - `time`
 
-use chrono::{
-    offset::{Local, Utc},
-    Locale,
-};
+use chrono::Utc;
 use chrono_tz::Tz;
-use crossbeam_channel::Sender;
-use serde_derive::Deserialize;
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::de::deserialize_duration;
-use crate::errors::*;
-use crate::formatting::FormatTemplate;
-use crate::scheduler::Task;
-use crate::widgets::text::TextWidget;
-use crate::widgets::I3BarWidget;
+use super::prelude::*;
 
-pub struct Time {
-    time: TextWidget,
-    update_interval: Duration,
-    formats: (String, Option<String>),
-    timezone: Option<Tz>,
-    locale: Option<String>,
+#[derive(Deserialize, Debug, SmartDefault)]
+#[serde(deny_unknown_fields, default)]
+pub struct Config {
+    pub format: FormatConfig,
+    #[default(10.into())]
+    pub interval: Seconds,
+    pub timezone: Option<Timezone>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields, default)]
-pub struct TimeConfig {
-    /// Format string.
-    ///
-    /// See [chrono docs](https://docs.rs/chrono/0.3.0/chrono/format/strftime/index.html#specifiers) for all options.
-    pub format: FormatTemplate,
-
-    /// Update interval in seconds
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub interval: Duration,
-
-    pub timezone: Option<Tz>,
-
-    pub locale: Option<String>,
+#[serde(untagged)]
+pub enum Timezone {
+    Timezone(Tz),
+    Timezones(Vec<Tz>),
 }
 
-impl Default for TimeConfig {
-    fn default() -> Self {
-        Self {
-            format: FormatTemplate::default(),
-            interval: Duration::from_secs(5),
-            timezone: None,
-            locale: None,
-        }
-    }
-}
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    api.set_default_actions(&[
+        (MouseButton::Left, None, "next_timezone"),
+        (MouseButton::Right, None, "prev_timezone"),
+    ])
+    .await?;
 
-impl ConfigBlock for Time {
-    type Config = TimeConfig;
+    let format = config
+        .format
+        .with_default(" $icon $timestamp.datetime() ")?;
 
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        _tx_update_request: Sender<Task>,
-    ) -> Result<Self> {
-        Ok(Time {
-            time: TextWidget::new(id, 0, shared_config)
-                .with_text("")
-                .with_icon("time")?,
-            update_interval: block_config.interval,
-            formats: block_config
-                .format
-                .with_default("%a %d/%m %R")?
-                .render(&HashMap::<&str, _>::new())?,
-            timezone: block_config.timezone,
-            locale: block_config.locale,
-        })
-    }
-}
+    let timezones = match config.timezone {
+        Some(tzs) => match tzs {
+            Timezone::Timezone(tz) => vec![tz],
+            Timezone::Timezones(tzs) => tzs,
+        },
+        None => Vec::new(),
+    };
 
-impl Time {
-    fn get_formatted_time(&self, format: &str) -> Result<String> {
-        let time = match &self.locale {
-            Some(l) => {
-                let locale: Locale = l.as_str().try_into().ok().error_msg("invalid locale")?;
-                match self.timezone {
-                    Some(tz) => Utc::now()
-                        .with_timezone(&tz)
-                        .format_localized(format, locale),
-                    None => Local::now().format_localized(format, locale),
-                }
-            }
-            None => match self.timezone {
-                Some(tz) => Utc::now().with_timezone(&tz).format(format),
-                None => Local::now().format(format),
-            },
-        };
-        Ok(format!("{}", time))
-    }
-}
+    let prev_step_length = timezones.len().saturating_sub(2);
 
-impl Block for Time {
-    fn name(&self) -> &'static str {
-        "time"
-    }
+    let mut timezone_iter = timezones.iter().cycle();
 
-    fn update(&mut self) -> Result<Option<Update>> {
-        if self.timezone.is_none() {
+    let mut timezone = timezone_iter.next();
+
+    let mut timer = config.interval.timer();
+
+    loop {
+        if timezone.is_none() {
             // Update timezone because `chrono` will not do that for us.
             // https://github.com/chronotope/chrono/issues/272
             unsafe { tzset() };
         }
 
-        let full = self.get_formatted_time(&self.formats.0)?;
-        let short = match &self.formats.1 {
-            Some(short_fmt) => Some(self.get_formatted_time(short_fmt)?),
-            None => None,
-        };
-        self.time.set_texts((full, short));
-        Ok(Some(self.update_interval.into()))
-    }
+        let mut widget = Widget::new().with_format(format.clone());
 
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![&self.time]
+        widget.set_values(map! {
+            "icon" => Value::icon(api.get_icon("time")?),
+            "timestamp" => Value::datetime(Utc::now(), timezone.copied())
+        });
+
+        api.set_widget(widget).await?;
+
+        tokio::select! {
+            _ = timer.tick() => (),
+            event = api.event() => match event {
+                Action(e) if e == "next_timezone" => {
+                    timezone = timezone_iter.next();
+                },
+                Action(e) if e == "prev_timezone" => {
+                    timezone = timezone_iter.nth(prev_step_length);
+                },
+                _ => (),
+            }
+        }
     }
 }
 

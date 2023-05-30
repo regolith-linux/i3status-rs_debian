@@ -1,811 +1,643 @@
-use std::boxed::Box;
-use std::result;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+//! The current song title and artist
+//!
+//! Also provides buttons for play/pause, previous and next.
+//!
+//! Supports all music players that implement the [MediaPlayer2 Interface]. This includes:
+//!
+//! - Spotify
+//! - VLC
+//! - mpd (via [mpDris2](https://github.com/eonpatapon/mpDris2))
+//!
+//! and many others.
+//!
+//! By default the block tracks all players available on the MPRIS bus. Right clicking on the block
+//! will cycle it to the next player. You can pin the widget to a given player via the "player"
+//! setting.
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `format` | A string to customise the output of this block. See below for available placeholders. | <code>" $icon {$combo.str(max_w:25,rot_interval:0.5) $play &vert;}"</code>
+//! `player` | Name(s) of the music player(s) MPRIS interface. This can be either a music player name or an array of music player names. Run <code>busctl --user list &vert; grep "org.mpris.MediaPlayer2." &vert; cut -d' ' -f1</code> and the name is the part after "org.mpris.MediaPlayer2.". | `None`
+//! `interface_name_exclude` | A list of regex patterns for player MPRIS interface names to ignore. | `["playerctld"]`
+//! `separator` | String to insert between artist and title. | `" - "`
+//! `seek_step_secs` | Positive number of seconds to seek forward/backward when scrolling on the bar. Does not need to be an integer. | `1`
+//! `volume_step` | The percent volume level is increased/decreased for the selected audio device when scrolling. Capped automatically at 50. | `5`
+//!
+//! Note: All placeholders except `icon` can be absent. See the examples below to learn how to handle this.
+//!
+//! Placeholder   | Value          | Type
+//! --------------|----------------|------
+//! `icon`        | A static icon  | Icon
+//! `artist`      | Current artist | Text
+//! `title`       | Current title  | Text
+//! `url`         | Current song url | Text
+//! `combo`       | Resolves to "`$artist[sep]$title"`, `"$artist"`, `"$title"`, or `"$url"` depending on what information is available. `[sep]` is set by `separator` option. | Text
+//! `player`      | Name of the current player (taken from the last part of its MPRIS bus name) | Text
+//! `avail`       | Total number of players available to switch between | Number
+//! `cur`         | Total number of players available to switch between | Number
+//! `play`        | Play/Pause button | Clickable icon
+//! `next`        | Next button | Clickable icon
+//! `prev`        | Previous button | Clickable icon
+//! `volume_icon` | Icon based on volume. Missing if unsupported.    | Icon
+//! `volume`      | Current volume. Missing if muted or unsupported. | Number
+//!
+//! Action          | Default button
+//! ----------------|------------------
+//! `play_pause`    | Left on `$play`
+//! `next`          | Left on `$next`
+//! `prev`          | Left on `$prev`
+//! `next_player`   | Right
+//! `seek_forward`  | Wheel Up
+//! `seek_backward` | Wheel Down
+//! `volume_up`     | -
+//! `volume_down`   | -
+//!
+//! # Examples
+//!
+//! Show the currently playing song on Spotify only, with play & next buttons and limit the width
+//! to 20 characters:
+//!
+//! ```toml
+//! [[block]]
+//! block = "music"
+//! format = " $icon {$combo.str(max_w:20) $play $next |}"
+//! player = "spotify"
+//! ```
+//!
+//! Same thing for any compatible player, takes the first active on the bus, but ignores "mpd" or anything with "kdeconnect" in the name:
+//!
+//! ```toml
+//! [[block]]
+//! block = "music"
+//! format = " $icon {$combo.str(max_w:20) $play $next |}"
+//! interface_name_exclude = [".*kdeconnect.*", "mpd"]
+//! ```
+//!
+//! Same as above, but displays with rotating text
+//!
+//! ```toml
+//! [[block]]
+//! block = "music"
+//! format = " $icon {$combo.str(max_w:20,rot_interval:0.5) $play $next |}"
+//! interface_name_exclude = [".*kdeconnect.*", "mpd"]
+//! ```
+//!
+//! Click anywhere to play/pause:
+//!
+//! ```toml
+//! [[block]]
+//! block = "music"
+//! [[block.click]]
+//! button = "left"
+//! action = "play_pause"
+//! ```
+//!
+//! Scroll to change the player volume, use the forward and back buttons to seek:
+//!
+//! ```toml
+//! [[block]]
+//! block = "music"
+//! format = " $icon $volume_icon $combo $play $next| "
+//! seek_step_secs = 10
+//! [[block.click]]
+//! button = "up"
+//! action = "volume_up"
+//! [[block.click]]
+//! button = "down"
+//! action = "volume_down"
+//! [[block.click]]
+//! button = "forward"
+//! action = "seek_forward"
+//! [[block.click]]
+//! button = "back"
+//! action = "seek_backward"
+//! ```
+//!
+//! # Icons Used
+//! - `music`
+//! - `music_next`
+//! - `music_play`
+//! - `music_prev`
+//! - `volume_muted`
+//! - `volume` (as a progression)
+//!
+//! [MediaPlayer2 Interface]: https://specifications.freedesktop.org/mpris-spec/latest/Player_Interface.html
 
-use crossbeam_channel::Sender;
-use dbus::{
-    arg::{Array, RefArg},
-    ffidisp::stdintf::org_freedesktop_dbus::{Properties, PropertiesPropertiesChanged},
-    ffidisp::{BusType, Connection},
-    message::SignalArgs,
-    Message,
-};
+use super::prelude::*;
 use regex::Regex;
-use serde_derive::Deserialize;
+use zbus::fdo::{DBusProxy, NameOwnerChanged, PropertiesChanged};
+use zbus::names::{OwnedBusName, OwnedUniqueName};
+use zbus::{MatchRule, MessageStream};
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::{LogicalDirection, Scrolling, SharedConfig};
-use crate::de::deserialize_duration;
-use crate::errors::*;
-use crate::formatting::value::Value;
-use crate::formatting::FormatTemplate;
-use crate::protocol::i3bar_event::{I3BarEvent, MouseButton};
-use crate::scheduler::Task;
-use crate::subprocess::spawn_child_async;
-use crate::util::pseudo_uuid;
-use crate::widgets::{
-    rotatingtext::RotatingTextWidget, text::TextWidget, I3BarWidget, Spacing, State,
-};
+mod zbus_mpris;
+mod zbus_playerctld;
 
-#[derive(Debug, Clone)]
-struct Player {
-    bus_name: String,
-    interface_name: String,
-    playback_status: PlaybackStatus,
-    artist: Option<String>,
-    title: Option<String>,
-    //TODO
-    //volume: u32,
+make_log_macro!(debug, "music");
+
+const PLAY_PAUSE_BTN: &str = "play_pause_btn";
+const NEXT_BTN: &str = "next_btn";
+const PREV_BTN: &str = "prev_btn";
+
+#[derive(Deserialize, Debug, SmartDefault)]
+#[serde(deny_unknown_fields, default)]
+pub struct Config {
+    pub format: FormatConfig,
+    pub player: PlayerName,
+    #[default(vec!["playerctld".into()])]
+    pub interface_name_exclude: Vec<String>,
+    #[default(" - ".into())]
+    pub separator: String,
+    #[default(1.into())]
+    pub seek_step_secs: Seconds<false>,
+    #[default(5.0)]
+    pub volume_step: f64,
 }
 
-impl Player {
-    pub fn new(dbus_conn: &Connection, name: &str, bus_name: &str) -> Self {
-        let path = dbus_conn.with_path(name, "/org/mpris/MediaPlayer2", 500);
-        let data = path
-            .get("org.mpris.MediaPlayer2.Player", "Metadata")
-            .map(|d: Box<dyn RefArg>| extract_from_metadata(d.as_ref()));
-        let (title, artist) = match data {
-            Ok(Ok(res)) => res,
-            _ => (None, None),
-        };
+#[derive(Deserialize, Debug, Clone, SmartDefault)]
+#[serde(untagged)]
+pub enum PlayerName {
+    Single(String),
+    #[default]
+    Multiple(Vec<String>),
+}
 
-        // Get current playback status
-        let status = path
-            .get("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
-            .map(|d: Box<dyn RefArg>| extract_playback_status(d.as_ref()))
-            .unwrap_or_default();
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    api.set_default_actions(&[
+        (MouseButton::Left, Some(PLAY_PAUSE_BTN), "play_pause"),
+        (MouseButton::Left, Some(NEXT_BTN), "next"),
+        (MouseButton::Left, Some(PREV_BTN), "prev"),
+        (MouseButton::Right, None, "next_player"),
+        (MouseButton::WheelUp, None, "seek_forward"),
+        (MouseButton::WheelDown, None, "seek_backward"),
+    ])
+    .await?;
 
-        Self {
-            bus_name: bus_name.to_string(),
-            interface_name: name.to_string(),
-            playback_status: status,
-            artist,
-            title,
+    let dbus_conn = new_dbus_connection().await?;
+
+    let format = config
+        .format
+        .with_default(" $icon {$combo.str(max_w:25,rot_interval:0.5) $play |}")?;
+
+    let volume_step = config.volume_step.clamp(0.0, 50.0) / 100.0;
+
+    let new_btn = |icon: &str, instance: &'static str, api: &mut CommonApi| -> Result<Value> {
+        Ok(Value::icon(api.get_icon(icon)?).with_instance(instance))
+    };
+
+    let values = map! {
+        "icon" => Value::icon(api.get_icon("music")?),
+        "next" => new_btn("music_next", NEXT_BTN, &mut api)?,
+        "prev" => new_btn("music_prev", PREV_BTN, &mut api)?,
+    };
+
+    let preferred_players = match config.player {
+        PlayerName::Single(name) => vec![name],
+        PlayerName::Multiple(names) => names,
+    };
+    let exclude_regex = config
+        .interface_name_exclude
+        .iter()
+        .map(|r| Regex::new(r))
+        .collect::<Result<Vec<_>, _>>()
+        .error("Invalid regex")?;
+
+    let playerctld_proxy = zbus_playerctld::PlayerctldProxy::new(&dbus_conn)
+        .await
+        .error("Failed to create PlayerctldProxy")?;
+
+    let mut players = get_players(&dbus_conn, &preferred_players, &exclude_regex).await?;
+    let mut cur_player = None;
+    if let Ok(playerctld_players) = playerctld_proxy.player_names().await {
+        // If we can get the list of players from playerctld then we should
+        // take the first matching player (this is the most recently active player)
+        for playerctld_player in playerctld_players {
+            if let Some(pos) = players
+                .iter()
+                .position(|p| p.bus_name.as_str() == playerctld_player)
+            {
+                cur_player = Some(pos);
+                break;
+            }
+        }
+    } else {
+        // If we couldn't get the players from playerctld then fall back to walking over
+        // the players and select the first one found playing something, or the last one
+        // in the list (the most recently opened)
+        for (i, player) in players.iter().enumerate() {
+            cur_player = Some(i);
+            if player.status == Some(PlaybackStatus::Playing) {
+                break;
+            }
+        }
+    }
+
+    let mut properties_stream = MessageStream::for_match_rule(
+        MatchRule::builder()
+            .msg_type(zbus::MessageType::Signal)
+            .interface("org.freedesktop.DBus.Properties")
+            .and_then(|x| x.member("PropertiesChanged"))
+            .and_then(|x| x.path("/org/mpris/MediaPlayer2"))
+            .unwrap()
+            .build(),
+        &dbus_conn,
+        None,
+    )
+    .await
+    .error("Failed to add match rule")?;
+
+    let mut name_owner_changed_stream = MessageStream::for_match_rule(
+        MatchRule::builder()
+            .msg_type(zbus::MessageType::Signal)
+            .interface("org.freedesktop.DBus")
+            .and_then(|x| x.member("NameOwnerChanged"))
+            .and_then(|x| x.arg0namespace("org.mpris.MediaPlayer2"))
+            .unwrap()
+            .build(),
+        &dbus_conn,
+        None,
+    )
+    .await
+    .error("Failed to add match rule")?;
+
+    let mut active_player_change_end_stream = playerctld_proxy
+        .receive_active_player_change_end()
+        .await
+        .error("Failed to create ActivePlayerChangeEndStream")?;
+
+    loop {
+        debug!("available players:");
+        for player in &players {
+            debug!("{}", player.bus_name);
+        }
+
+        let avail = players.len();
+        let player = cur_player.map(|c| players.get_mut(c).unwrap());
+        match player {
+            Some(ref player) => {
+                let mut values = values.clone();
+                values.insert("avail".into(), Value::number(avail));
+                values.insert("cur".into(), Value::number(cur_player.unwrap() + 1));
+                values.insert(
+                    "player".into(),
+                    Value::text(
+                        extract_player_name(player.bus_name.as_str())
+                            .unwrap()
+                            .into(),
+                    ),
+                );
+                let (state, play_icon) = match player.status {
+                    Some(PlaybackStatus::Playing) => (State::Info, "music_pause"),
+                    _ => (State::Idle, "music_play"),
+                };
+                values.insert("play".into(), new_btn(play_icon, PLAY_PAUSE_BTN, &mut api)?);
+                if let Some(url) = &player.metadata.url {
+                    values.insert("url".into(), Value::text(url.clone()));
+                }
+                match (
+                    &player.metadata.title,
+                    &player.metadata.artist,
+                    &player.metadata.url,
+                ) {
+                    (Some(t), None, _) => {
+                        values.insert("combo".into(), Value::text(t.clone()));
+                        values.insert("title".into(), Value::text(t.clone()));
+                    }
+                    (None, Some(a), _) => {
+                        values.insert("combo".into(), Value::text(a.clone()));
+                        values.insert("artist".into(), Value::text(a.clone()));
+                    }
+                    (Some(t), Some(a), _) => {
+                        values.insert(
+                            "combo".into(),
+                            Value::text(format!("{t}{}{a}", config.separator)),
+                        );
+                        values.insert("title".into(), Value::text(t.clone()));
+                        values.insert("artist".into(), Value::text(a.clone()));
+                    }
+                    (None, None, Some(url)) => {
+                        values.insert("combo".into(), Value::text(url.clone()));
+                    }
+                    _ => (),
+                }
+                if let Some(volume) = player.volume {
+                    values.insert(
+                        "volume_icon".into(),
+                        Value::icon(api.get_icon_in_progression("volume", volume)?),
+                    );
+                    values.insert("volume".into(), Value::percents(volume * 100.0));
+                }
+                let mut widget = Widget::new().with_format(format.clone());
+                widget.set_values(values);
+                widget.state = state;
+                api.set_widget(widget).await?;
+            }
+            None => {
+                let mut widget = Widget::new().with_format(format.clone());
+                widget.set_values(map!("icon" => Value::icon(api.get_icon("music")?)));
+                api.set_widget(widget).await?;
+            }
+        }
+
+        loop {
+            select! {
+                Some(msg) = properties_stream.next() => {
+                    let msg = msg.unwrap();
+                    let msg = PropertiesChanged::from_message(msg).unwrap();
+                    let args = msg.args().unwrap();
+                    let header = msg.header().unwrap();
+                    let sender = header.sender().unwrap().unwrap();
+                    if let Some((pos, player)) = players.iter_mut().enumerate().find(|p| &*p.1.owner == sender) {
+                        let props = args.changed_properties;
+                        if let Some(status) = props.get("PlaybackStatus") {
+                            let status: &str = status.downcast_ref().unwrap();
+                            player.status = PlaybackStatus::from_str(status);
+                        }
+                        if let Some(metadata) = props.get("Metadata") {
+                            player.metadata =
+                                zbus_mpris::PlayerMetadata::try_from(metadata.to_owned()).unwrap();
+                        }
+                        if let Some(volume) = props.get("Volume") {
+                            player.volume = Some(*volume.downcast_ref().unwrap());
+                        }
+                        if player.status == Some(PlaybackStatus::Playing)
+                        && (
+                            player.metadata.title.is_some()
+                            || player.metadata.artist.is_some()
+                            || player.metadata.url.is_some()
+                        ) {
+                            cur_player = Some(pos);
+                        }
+                        break;
+                    }
+                }
+                Some(msg) = name_owner_changed_stream.next() => {
+                    let msg = msg.unwrap();
+                    let msg = NameOwnerChanged::from_message(msg).unwrap();
+                    let args = msg.args().unwrap();
+                    match (args.old_owner.as_ref(), args.new_owner.as_ref()) {
+                        (None, Some(new)) => if player_matches(args.name.as_str(), &preferred_players, &exclude_regex) {
+                            match Player::new(&dbus_conn, args.name.to_owned().into(), new.to_owned().into()).await {
+                                Ok(player) => players.push(player),
+                                Err(e) => {
+                                    debug!("{e}");
+                                },
+                            }
+                        }
+                        (Some(old), None) => {
+                            if let Some(pos) = players.iter().position(|p| &*p.owner == old) {
+                                players.remove(pos);
+                                if let Some(cur) = cur_player {
+                                    if players.is_empty() {
+                                        cur_player = None;
+                                    } else if pos == cur {
+                                        cur_player = Some(0);
+                                    } else if pos < cur {
+                                        cur_player = Some(cur - 1);
+                                    }
+                                }
+                            }
+                        }
+                        _ => (),
+                    }
+                    break;
+                }
+                Some(msg)  = active_player_change_end_stream.next() => {
+                    let args = msg.args().unwrap();
+                    if let Some(pos) = players.iter().position(|p| p.bus_name == args.name){
+                        cur_player = Some(pos);
+                    }
+                    else{
+                        // We must have shifted to a player we wanted to skip (on the interface_name_exclude list).
+                        // Let's shift again
+                        if let Err(e) = playerctld_proxy.shift().await{
+                            debug!("{e}");
+                        }
+                    }
+                    break;
+                }
+                event = api.event() => match event {
+                    UpdateRequest => (),
+                    Action(a) => {
+                        if let Some(i) = cur_player {
+                            let player = &players[i];
+                            match a.as_ref() {
+                                "play_pause" => {
+                                    player.play_pause().await?;
+                                }
+                                "next" => {
+                                    player.next().await?;
+                                }
+                                "prev" => {
+                                    player.prev().await?;
+                                }
+                                "next_player" => {
+                                    cur_player = Some((i + 1) % players.len());
+                                    if let Err(e) = playerctld_proxy.shift().await{
+                                        debug!("{e}");
+                                    }
+                                    break;
+                                }
+                                "seek_forward" => {
+                                    player.seek(config.seek_step_secs.0.as_micros() as i64).await?;
+                                }
+                                "seek_backward" => {
+                                    player.seek(-(config.seek_step_secs.0.as_micros() as i64)).await?;
+                                }
+                                "volume_up" => {
+                                    player.set_volume(volume_step).await?;
+                                }
+                                "volume_down" => {
+                                    player.set_volume(-volume_step).await?;
+                                }
+                                _ => (),
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+async fn get_players(
+    dbus_conn: &zbus::Connection,
+    preferred_players: &[String],
+    exclude_regex: &[Regex],
+) -> Result<Vec<Player>> {
+    let proxy = DBusProxy::new(dbus_conn)
+        .await
+        .error("failed to create DBusProxy")?;
+    let names = proxy
+        .list_names()
+        .await
+        .error("failed to list dbus names")?;
+    let mut players = Vec::new();
+    for name in names {
+        if player_matches(name.as_str(), preferred_players, exclude_regex) {
+            let owner = proxy.get_name_owner(name.as_ref()).await.unwrap();
+            match Player::new(dbus_conn, name, owner).await {
+                Ok(player) => players.push(player),
+                Err(e) => {
+                    debug!("{e}");
+                }
+            }
+        }
+    }
+    Ok(players)
+}
+
+#[derive(Debug)]
+struct Player {
+    status: Option<PlaybackStatus>,
+    owner: OwnedUniqueName,
+    bus_name: OwnedBusName,
+    player_proxy: zbus_mpris::PlayerProxy<'static>,
+    metadata: zbus_mpris::PlayerMetadata,
+    volume: Option<f64>,
+}
+
+impl Player {
+    async fn new(
+        dbus_conn: &zbus::Connection,
+        bus_name: OwnedBusName,
+        owner: OwnedUniqueName,
+    ) -> Result<Player> {
+        let proxy = zbus_mpris::PlayerProxy::builder(dbus_conn)
+            .destination(bus_name.clone())
+            .error("failed to set proxy destination")?
+            .build()
+            .await
+            .error("failed to open player proxy")?;
+
+        let (metadata, status, volume) =
+            tokio::join!(proxy.metadata(), proxy.playback_status(), proxy.volume());
+
+        let metadata = metadata.error("failed to obtain player metadata")?;
+        let status = status.error("failed to obtain player status")?;
+
+        Ok(Self {
+            status: PlaybackStatus::from_str(&status),
+            owner,
+            bus_name,
+            player_proxy: proxy,
+            metadata,
+            volume: volume.ok(),
+        })
+    }
+
+    async fn play_pause(&self) -> Result<()> {
+        self.player_proxy
+            .play_pause()
+            .await
+            .error("play_pause() failed")
+    }
+
+    async fn prev(&self) -> Result<()> {
+        self.player_proxy.previous().await.error("prev() failed")
+    }
+
+    async fn next(&self) -> Result<()> {
+        self.player_proxy.next().await.error("next() failed")
+    }
+
+    async fn seek(&self, offset: i64) -> Result<()> {
+        match self.player_proxy.seek(offset).await {
+            Err(zbus::Error::MethodError(e, _, _))
+                if e == "org.freedesktop.DBus.Error.NotSupported" =>
+            {
+                // TODO show this error somehow
+                Ok(())
+            }
+            other => dbg!(other).error("seek() failed"),
+        }
+    }
+
+    async fn set_volume(&self, step_size: f64) -> Result<()> {
+        if let Some(volume) = self.volume {
+            self.player_proxy
+                .set_volume(volume + step_size)
+                .await
+                .error("set_volume() failed")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlaybackStatus {
     Playing,
     Paused,
     Stopped,
-    Unknown,
 }
 
-impl Default for PlaybackStatus {
-    fn default() -> Self {
-        PlaybackStatus::Unknown
-    }
-}
-
-pub struct Music {
-    id: usize,
-    play_id: usize,
-    next_id: usize,
-    prev_id: usize,
-    collapsed_id: usize,
-
-    current_song_widget: RotatingTextWidget,
-    prev: Option<TextWidget>,
-    play: Option<TextWidget>,
-    next: Option<TextWidget>,
-    on_collapsed_click_widget: TextWidget,
-    on_collapsed_click: Option<String>,
-    on_click: Option<String>,
-    dbus_conn: Connection,
-    marquee: bool,
-    marquee_interval: Duration,
-    smart_trim: bool,
-    max_width: usize,
-    separator: String,
-    seek_step: i64,
-    players: Arc<Mutex<Vec<Player>>>,
-    hide_when_empty: bool,
-    send: Sender<Task>,
-    format: FormatTemplate,
-    scrolling: Scrolling,
-}
-
-impl Music {
-    fn smart_trim(&self, artist: String, title: String) -> String {
-        // Below code is by https://github.com/jgbyrne
-        let mut artist: String = artist;
-        let mut title: String = title;
-        let textlen =
-            title.chars().count() + self.separator.chars().count() + artist.chars().count();
-
-        if title.is_empty() {
-            artist.truncate(self.max_width);
-        } else if artist.is_empty() {
-            title.truncate(self.max_width);
-        } else {
-            // overshoot: # of chars we need to trim
-            // substance: # of chars available for trimming
-            let overshoot = (textlen - self.max_width) as f32;
-            let substance = (textlen - 3) as f32;
-
-            // Calculate number of chars to trim from title
-            let tlen = title.chars().count();
-            let tblm = tlen as f32 / substance;
-            let mut tnum = (overshoot * tblm).ceil() as usize;
-
-            // Calculate number of chars to trim from artist
-            let alen = artist.chars().count();
-            let ablm = alen as f32 / substance;
-            let mut anum = (overshoot * ablm).ceil() as usize;
-
-            // Prefer to only trim one of the title and artist
-            if anum < tnum && anum <= 3 && (tnum + anum < tlen) {
-                anum = 0;
-                tnum += anum;
-            }
-
-            if tnum < anum && tnum <= 3 && (anum + tnum < alen) {
-                tnum = 0;
-                anum += tnum;
-            }
-
-            // Calculate how many chars to keep from title and artist
-            let mut ttrc = tlen - tnum;
-            if !(1..5001).contains(&ttrc) {
-                ttrc = 1
-            }
-
-            let mut atrc = alen - anum;
-            if !(1..5001).contains(&atrc) {
-                atrc = 1
-            }
-
-            // Truncate artist and title to appropriate lengths
-            let tidx = title
-                .char_indices()
-                .nth(ttrc)
-                .unwrap_or((title.len(), 'a'))
-                .0;
-            title.truncate(tidx);
-
-            let aidx = artist
-                .char_indices()
-                .nth(atrc)
-                .unwrap_or((artist.len(), 'a'))
-                .0;
-            artist.truncate(aidx);
-        }
-        format!("{}{}{}", title, self.separator, artist)
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
-pub enum PlayerName {
-    PlayerName(String),
-    PlayerNames(Vec<String>),
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields, default)]
-pub struct MusicConfig {
-    /// Name(s) of the music player(s). Must be the same name the player is
-    /// registered with the MediaPlayer2 Interface. This can be either a single
-    /// player name or an array of player names. If not specified then
-    /// the block will track all players found.
-    pub player: Option<PlayerName>,
-
-    /// Max width of the block in characters, not including the buttons.
-    pub max_width: usize,
-
-    /// Bool to specify whether the block will change width depending on the
-    /// text content or remain static always (= max_width)
-    pub dynamic_width: bool,
-
-    /// Bool to specify if a marquee style rotation should be used if the
-    /// title + artist is longer than max-width
-    pub marquee: bool,
-
-    /// Marquee interval in seconds. This is the delay between each rotation.
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub marquee_interval: Duration,
-
-    /// Marquee speed in seconds. This is the scrolling time used per character.
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub marquee_speed: Duration,
-
-    /// Bool to specify whether smart trimming should be used when marquee
-    /// rotation is disabled and the title + artist is longer than
-    /// max-width. It will trim from both the artist and the title in proportion
-    /// to their lengths, to try and show the most information possible.
-    pub smart_trim: bool,
-
-    /// Separator to use between artist and title.
-    pub separator: String,
-
-    /// Array of control buttons to be displayed. Options are prev (previous title),
-    /// play (play/pause) and next (next title).
-    pub buttons: Vec<String>,
-
-    pub on_collapsed_click: Option<String>,
-
-    // Number of microseconds to seek forward/backward when scrolling on the bar.
-    pub seek_step: i64,
-
-    /// MPRIS interface name regex patterns to ignore.
-    pub interface_name_exclude: Vec<String>,
-
-    pub hide_when_empty: bool,
-
-    /// Format string for displaying music player info.
-    pub format: FormatTemplate,
-}
-
-impl Default for MusicConfig {
-    fn default() -> Self {
-        Self {
-            player: None,
-            max_width: 21,
-            dynamic_width: false,
-            marquee: true,
-            marquee_interval: Duration::from_secs(10),
-            marquee_speed: Duration::from_millis(500),
-            smart_trim: false,
-            separator: " - ".to_string(),
-            buttons: Vec::new(),
-            on_collapsed_click: None,
-            seek_step: 1000,
-            interface_name_exclude: Vec::new(),
-            hide_when_empty: false,
-            format: FormatTemplate::default(),
+impl PlaybackStatus {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "Paused" => Some(Self::Paused),
+            "Playing" => Some(Self::Playing),
+            "Stopped" => Some(Self::Stopped),
+            _ => None,
         }
     }
 }
 
-impl ConfigBlock for Music {
-    type Config = MusicConfig;
-
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        send: Sender<Task>,
-    ) -> Result<Self> {
-        let play_id = pseudo_uuid();
-        let prev_id = pseudo_uuid();
-        let next_id = pseudo_uuid();
-        let collapsed_id = pseudo_uuid();
-
-        let dbus_conn = Connection::get_private(BusType::Session)
-            .error_msg("failed to establish D-Bus connection")?;
-
-        let interface_name_exclude_regexps =
-            compile_regexps(block_config.clone().interface_name_exclude)
-                .error_msg("failed to parse exclude patterns")?;
-
-        // ListNames returns one argument, which is an array of strings.
-        let list_names = dbus_conn
-            .send_with_reply_and_block(
-                Message::new_method_call(
-                    "org.freedesktop.DBus",
-                    "/",
-                    "org.freedesktop.DBus",
-                    "ListNames",
-                )
-                .unwrap(),
-                500,
-            )
-            .unwrap();
-
-        let mut preferred_players = Vec::new();
-
-        if let Some(player) = block_config.player {
-            match player {
-                PlayerName::PlayerName(player) => preferred_players.push(player),
-                PlayerName::PlayerNames(players) => preferred_players = players,
-            }
-        }
-
-        let names = list_names.get1::<Array<&str, _>>().unwrap().filter(|name| {
-            // If an interface matches an exclude pattern, ignore it
-            !ignored_player(name, &interface_name_exclude_regexps, &preferred_players)
-        });
-
-        let mut players = Vec::<Player>::new();
-        for name in names {
-            // Get bus connection name
-            let get_name_owner = dbus_conn
-                .send_with_reply_and_block(
-                    Message::new_method_call(
-                        "org.freedesktop.DBus",
-                        "/",
-                        "org.freedesktop.DBus",
-                        "GetNameOwner",
-                    )
-                    .unwrap()
-                    .append1(name),
-                    500,
-                )
-                .unwrap();
-            let bus_name: &str = get_name_owner.read1().unwrap();
-
-            // Skip if already added
-            if players.iter().any(|p| p.bus_name == bus_name) {
-                continue;
-            }
-
-            // Add player
-            players.push(Player::new(&dbus_conn, name, bus_name));
-        }
-
-        let players = Arc::new(Mutex::new(players));
-        let players_clone = players.clone();
-        let send_clone = send.clone();
-
-        thread::Builder::new()
-            .name("music".into())
-            .spawn(move || {
-                let dbus_conn = Connection::get_private(BusType::Session).unwrap();
-
-                // Listen to changes of players
-                dbus_conn.add_match("interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/org/mpris/MediaPlayer2'").unwrap();
-                // Add/remove players
-                dbus_conn.add_match("interface='org.freedesktop.DBus',member='NameOwnerChanged',path='/org/freedesktop/DBus',arg0namespace='org.mpris.MediaPlayer2'").unwrap();
-
-                // Skip the NameAcquired event.
-                dbus_conn.incoming(10_000).next();
-
-                loop {
-                    for ref signal in dbus_conn.incoming(60_000) {
-                        let mut players = players_clone
-                            .lock()
-                            .expect("failed to acquire lock for `players`");
-                        let mut updated = false;
-
-                        // Some property changed
-                        if let Some(prop_changed) = PropertiesPropertiesChanged::from_message(signal) {
-                            if let Some(sender) = signal.sender() {
-                                let sender = sender.to_string();
-                                if let Some(player) = players.iter_mut().find(|p| p.bus_name == sender) {
-                                    if let Some(data) = prop_changed.changed_properties.get("Metadata") {
-                                        let (title, artist) = extract_from_metadata(&data.0).unwrap_or((None,None));
-                                        if player.title != title || player.artist != artist {
-                                            player.title = title;
-                                            player.artist = artist;
-                                            updated = true;
-                                        }
-                                    }
-                                    if let Some(data) = prop_changed.changed_properties.get("PlaybackStatus") {
-                                        let new_playback = extract_playback_status(&data.0);
-                                        if player.playback_status != new_playback {
-                                            player.playback_status = new_playback;
-                                            updated = true;
-                                        }
-                                    }
-                                    // workaround for `playerctld`
-                                    // This block keeps track of players currently active on the MPRIS bus,
-                                    // and only clears the metadata when a player has disappeared from the bus.
-                                    // However `playerctl` is essentially doing the same thing as this block by
-                                    // keeping track of players by itself, and when the last player is closed
-                                    // the playerctld bus still remains which means the block never clears the
-                                    // metadata for the last player that disappeared. We can get around this by
-                                    // listening to the PlayerNames signal sent by playerctld and then only clear
-                                    // the metadata when there are no more players left.
-                                    if let Some(data) = prop_changed.changed_properties.get("PlayerNames") {
-                                        if data.0.as_iter().unwrap().peekable().peek().is_none() {
-                                            player.artist = None;
-                                            player.title = None;
-                                            updated = true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Add/remove player
-                        else if signal.member().as_deref() == Some("NameOwnerChanged") {
-                            if let Ok((name, old_owner, new_owner)) = signal.read3::<&str, &str, &str>() {
-                                match (old_owner, new_owner) {
-                                    ("", new_owner) => { // Add a new player
-                                        // Skip if already presented (or ignored)
-                                        if !players.iter().any(|p| p.bus_name == new_owner) && !ignored_player(name, &interface_name_exclude_regexps, &preferred_players) {
-                                            players.push(Player::new(&dbus_conn,name,new_owner));
-                                            updated = true;
-                                        }
-                                    }
-                                    (old_owner, "") => { // Remove an old player
-                                        if let Some(pos) = players.iter().position(|p| p.bus_name == old_owner) {
-                                            players.remove(pos);
-                                            updated = true;
-                                        }
-                                    }
-                                    _ => ()
-                                }
-                            }
-                        }
-
-                        // Request to update the block
-                        if updated {
-                            send_clone.send(Task {
-                                id,
-                                update_time: Instant::now(),
-                            }).unwrap();
-                        }
-                    }
-                }
-            })
-            .unwrap();
-
-        let mut play: Option<TextWidget> = None;
-        let mut prev: Option<TextWidget> = None;
-        let mut next: Option<TextWidget> = None;
-        for button in block_config.buttons {
-            match &*button {
-                "play" => {
-                    play = Some(
-                        TextWidget::new(id, play_id, shared_config.clone())
-                            .with_icon("music_play")?
-                            .with_state(State::Info)
-                            .with_spacing(Spacing::Hidden),
-                    )
-                }
-                "next" => {
-                    next = Some(
-                        TextWidget::new(id, next_id, shared_config.clone())
-                            .with_icon("music_next")?
-                            .with_state(State::Info)
-                            .with_spacing(Spacing::Hidden),
-                    )
-                }
-                "prev" => {
-                    prev = Some(
-                        TextWidget::new(id, prev_id, shared_config.clone())
-                            .with_icon("music_prev")?
-                            .with_state(State::Info)
-                            .with_spacing(Spacing::Hidden),
-                    )
-                }
-                x => {
-                    return Err(Error::new(format!(
-                        "unknown music button identifier: '{x}'",
-                    )))
-                }
-            };
-        }
-
-        fn compile_regexps(patterns: Vec<String>) -> result::Result<Vec<Regex>, regex::Error> {
-            patterns.iter().map(|p| Regex::new(p)).collect()
-        }
-
-        Ok(Music {
-            id,
-            play_id,
-            prev_id,
-            next_id,
-            collapsed_id,
-            current_song_widget: RotatingTextWidget::new(
-                id,
-                id,
-                Duration::new(block_config.marquee_interval.as_secs(), 0),
-                Duration::new(0, block_config.marquee_speed.subsec_nanos()),
-                block_config.max_width,
-                block_config.dynamic_width,
-                shared_config.clone(),
-            )
-            .with_icon("music")?
-            .with_state(State::Info)
-            .with_spacing(Spacing::Hidden),
-            prev,
-            play,
-            next,
-            on_click: None,
-            on_collapsed_click_widget: TextWidget::new(id, collapsed_id, shared_config.clone())
-                .with_icon("music")?
-                .with_state(State::Info)
-                .with_spacing(Spacing::Hidden),
-            on_collapsed_click: block_config.on_collapsed_click,
-            dbus_conn: Connection::get_private(BusType::Session)
-                .error_msg("failed to establish D-Bus connection")?,
-            marquee: block_config.marquee,
-            marquee_interval: block_config.marquee_interval,
-            smart_trim: block_config.smart_trim,
-            max_width: block_config.max_width,
-            separator: block_config.separator,
-            seek_step: block_config.seek_step,
-            players,
-            hide_when_empty: block_config.hide_when_empty,
-            send,
-            format: block_config.format.with_default("{combo}")?,
-            scrolling: shared_config.scrolling,
-        })
-    }
-
-    fn override_on_click(&mut self) -> Option<&mut Option<String>> {
-        Some(&mut self.on_click)
-    }
+fn extract_player_name(full_name: &str) -> Option<&str> {
+    const NAME_PREFIX: &str = "org.mpris.MediaPlayer2.";
+    full_name
+        .starts_with(NAME_PREFIX)
+        .then(|| &full_name[NAME_PREFIX.len()..])
 }
 
-impl Block for Music {
-    fn name(&self) -> &'static str {
-        "music"
-    }
+fn player_matches(full_name: &str, preferred_players: &[String], exclude_regex: &[Regex]) -> bool {
+    let name = match extract_player_name(full_name) {
+        Some(name) => name,
+        None => return false,
+    };
 
-    fn update(&mut self) -> Result<Option<Update>> {
-        let (rotation_in_progress, time_to_next_rotation) = if self.marquee {
-            self.current_song_widget.next()?
-        } else {
-            (false, None)
-        };
+    exclude_regex.iter().all(|r| !r.is_match(name))
+        && (preferred_players.is_empty()
+            || preferred_players.iter().any(|p| name.starts_with(&**p)))
+}
 
-        let players = self.players.lock().unwrap();
-        let first_player = players.first();
-        let metadata = match first_player {
-            Some(m) => m,
-            None => {
-                self.current_song_widget.set_text(String::from(""));
-                return Ok(None);
-            }
-        };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let interface_name = metadata.clone().interface_name;
-        let split: Vec<&str> = interface_name.split('.').collect();
-        let player_name = split[3].to_string();
-        let artist = metadata.clone().artist.unwrap_or_else(|| String::from(""));
-        let title = metadata.clone().title.unwrap_or_else(|| String::from(""));
-        let combo =
-            if (title.chars().count() + self.separator.chars().count() + artist.chars().count())
-                < self.max_width
-                || !self.smart_trim
-            {
-                format!("{}{}{}", title, self.separator, artist)
-            } else {
-                self.smart_trim(artist.clone(), title.clone())
-            };
-
-        let values = map!(
-            "artist" => Value::from_string(artist.clone()),
-            "title" => Value::from_string(title.clone()),
-            "combo" => Value::from_string(combo),
-            //TODO
-            //"vol" => volume,
-            "player" => Value::from_string(player_name),
-            "avail" => Value::from_string(players.len().to_string()),
+    #[test]
+    fn extract_player_name_test() {
+        assert_eq!(
+            extract_player_name("org.mpris.MediaPlayer2.firefox.instance852"),
+            Some("firefox.instance852")
         );
-
-        if !(rotation_in_progress) {
-            if title.is_empty() && artist.is_empty() {
-                self.current_song_widget.set_text(String::new());
-            } else {
-                self.current_song_widget
-                    .set_text(self.format.render(&values)?.0);
-            }
-        }
-
-        let state = match metadata.playback_status {
-            PlaybackStatus::Playing => State::Info,
-            _ => State::Idle,
-        };
-
-        [&mut self.play, &mut self.prev, &mut self.next]
-            .iter_mut()
-            .filter_map(|button| button.as_mut())
-            .for_each(|button| button.set_state(state));
-
-        self.current_song_widget.set_state(state);
-
-        if let Some(ref mut play) = self.play {
-            play.set_icon(match metadata.playback_status {
-                PlaybackStatus::Playing => "music_pause",
-                PlaybackStatus::Paused => "music_play",
-                PlaybackStatus::Stopped => "music_play",
-                PlaybackStatus::Unknown => "music_play",
-            })?
-        }
-
-        // If `marquee` is enabled then we need to schedule an update for the text rotation.
-        // (time_to_next_rotation is always None if marquee is disabled)
-        if let Some(t) = time_to_next_rotation {
-            Ok(Some(Update::Every(t)))
-        // We just finished a rotation so we wait before starting again
-        } else if self.marquee {
-            Ok(Some(self.marquee_interval.into()))
-        // Otherwise we do not need to schedule anything as the block will auto-update itself after
-        // seeing a PropertiesChanged signal for the MPRIS interface it is monitoring.
-        } else {
-            Ok(None)
-        }
+        assert_eq!(
+            extract_player_name("not.org.mpris.MediaPlayer2.firefox.instance852"),
+            None,
+        );
+        assert_eq!(
+            extract_player_name("org.mpris.MediaPlayer3.firefox.instance852"),
+            None,
+        );
     }
 
-    fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        if let Some(event_id) = event.instance {
-            let action = match event_id {
-                id if id == self.play_id => "PlayPause",
-                id if id == self.next_id => "Next",
-                id if id == self.prev_id => "Previous",
-                id if id == self.id => "",
-                id if id == self.collapsed_id => "",
-                _ => return Ok(()),
-            };
-
-            let mut players = self.players.lock().unwrap();
-
-            match event.button {
-                MouseButton::Left => {
-                    if !action.is_empty() && players.len() > 0 {
-                        let metadata = players.first().unwrap();
-                        let m = Message::new_method_call(
-                            metadata.interface_name.clone(),
-                            "/org/mpris/MediaPlayer2",
-                            "org.mpris.MediaPlayer2.Player",
-                            action,
-                        )
-                        .error_msg("failed to create D-Bus method call")?;
-                        self.dbus_conn
-                            .send(m)
-                            .ok()
-                            .error_msg("failed to call method via D-Bus")?;
-                    } else if event_id == self.collapsed_id && self.on_collapsed_click.is_some() {
-                        let cmd = self.on_collapsed_click.as_ref().unwrap();
-                        spawn_child_async("sh", &["-c", cmd]).error_msg("could not spawn child")?;
-                    } else if event_id == self.id {
-                        if let Some(ref cmd) = self.on_click {
-                            spawn_child_async("sh", &["-c", cmd])
-                                .error_msg("could not spawn child")?;
-                        }
-                    }
-                }
-                // TODO(?): If there is only one player in the queue and it is playerctld,
-                // then in that case send the "Shift" command via D-Bus to make playerctl
-                // cycle to the next player. Then this block will also update automatically.
-                // CLI cmd for reference (see "Seek" below for how to implement it in code):
-                // busctl --user call org.mpris.MediaPlayer2.playerctld \
-                //                    /org/mpris/MediaPlayer2 \
-                //                    com.github.altdesktop.playerctld \
-                //                    Shift
-                MouseButton::Right => {
-                    if (event_id == self.id || event_id == self.collapsed_id) && players.len() > 0 {
-                        players.rotate_left(1);
-                        self.send
-                            .send(Task {
-                                id: self.id,
-                                update_time: Instant::now(),
-                            })
-                            .error_msg("send error")?;
-                    }
-                }
-                _ => {
-                    if event_id == self.id && players.len() > 0 {
-                        let metadata = players.first().unwrap();
-                        let m = Message::new_method_call(
-                            metadata.interface_name.clone(),
-                            "/org/mpris/MediaPlayer2",
-                            "org.mpris.MediaPlayer2.Player",
-                            "Seek",
-                        )
-                        .error_msg("failed to create D-Bus method call")?;
-
-                        use LogicalDirection::*;
-                        match self.scrolling.to_logical_direction(event.button) {
-                            Some(Up) => {
-                                self.dbus_conn
-                                    .send(m.append1(self.seek_step * 1000))
-                                    .ok()
-                                    .error_msg("failed to call method via D-Bus")?;
-                            }
-                            Some(Down) => {
-                                self.dbus_conn
-                                    .send(m.append1(self.seek_step * -1000))
-                                    .ok()
-                                    .error_msg("failed to call method via D-Bus")?;
-                            }
-                            None => {}
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
+    #[test]
+    fn player_matches_test() {
+        let exclude = vec![Regex::new("mpd").unwrap(), Regex::new("firefox.*").unwrap()];
+        assert!(player_matches(
+            "org.mpris.MediaPlayer2.playerctld",
+            &[],
+            &exclude
+        ));
+        assert!(!player_matches(
+            "org.mpris.MediaPlayer2.playerctld",
+            &["spotify".into()],
+            &exclude
+        ));
+        assert!(!player_matches(
+            "org.mpris.MediaPlayer2.firefox.instance852",
+            &[],
+            &exclude
+        ));
     }
-
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        let players = self
-            .players
-            .lock()
-            .expect("failed to acquire lock for `players`");
-        if players.len() <= 1 && self.current_song_widget.is_empty() && self.hide_when_empty {
-            vec![]
-        } else if players.len() > 0 && !self.current_song_widget.is_empty() {
-            let mut elements: Vec<&dyn I3BarWidget> = vec![&self.current_song_widget];
-            if let Some(ref prev) = self.prev {
-                elements.push(prev);
-            }
-            if let Some(ref play) = self.play {
-                elements.push(play);
-            }
-            if let Some(ref next) = self.next {
-                elements.push(next);
-            }
-            elements
-        } else if self.current_song_widget.is_empty() {
-            vec![&self.on_collapsed_click_widget]
-        } else {
-            vec![&self.current_song_widget]
-        }
-    }
-}
-
-fn extract_playback_status(value: &dyn RefArg) -> PlaybackStatus {
-    if let Some(status) = value.as_str() {
-        match status {
-            "Playing" => PlaybackStatus::Playing,
-            "Paused" => PlaybackStatus::Paused,
-            "Stopped" => PlaybackStatus::Stopped,
-            _ => PlaybackStatus::Unknown,
-        }
-    } else {
-        PlaybackStatus::Unknown
-    }
-}
-
-fn extract_artist_from_value(value: &dyn RefArg) -> Result<&str> {
-    if let Some(artist) = value.as_str() {
-        Ok(artist)
-    } else {
-        extract_artist_from_value(
-            value
-                .as_iter()
-                .error_msg("failed to extract artist")?
-                .next()
-                .error_msg("failed to extract artist")?,
-        )
-    }
-}
-
-fn extract_from_metadata(metadata: &dyn RefArg) -> Result<(Option<String>, Option<String>)> {
-    let mut title = None;
-    let mut artist = None;
-
-    let mut iter = metadata.as_iter().error_msg("failed to extract metadata")?;
-
-    while let Some(key) = iter.next() {
-        let value = iter.next().error_msg("failed to extract metadata")?;
-        match key.as_str().error_msg("failed to extract metadata")? {
-            "xesam:artist" => artist = Some(String::from(extract_artist_from_value(value)?)),
-            "xesam:title" => {
-                title = Some(String::from(
-                    value.as_str().error_msg("failed to extract metadata")?,
-                ))
-            }
-            _ => {}
-        };
-    }
-    Ok((title, artist))
-}
-
-fn ignored_player(
-    name: &str,
-    interface_name_exclude_regexps: &[Regex],
-    preferred_players: &[String],
-) -> bool {
-    // If some players are specified in the config then we will ignore all others.
-    if !preferred_players.is_empty() {
-        if preferred_players
-            .iter()
-            .any(|player| name.starts_with(&format!("org.mpris.MediaPlayer2.{}", player)))
-        {
-            return false;
-        }
-        return true;
-    }
-
-    if !name.starts_with("org.mpris.MediaPlayer2") {
-        return true;
-    }
-
-    if interface_name_exclude_regexps
-        .iter()
-        .any(|regex| regex.is_match(name))
-    {
-        return true;
-    }
-
-    false
 }

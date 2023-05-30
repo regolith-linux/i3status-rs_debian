@@ -1,224 +1,262 @@
-use std::fs::{File, OpenOptions};
-use std::io::prelude::*;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::prelude::v1::String;
-use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
+use dirs::{config_dir, data_dir};
 use serde::de::DeserializeOwned;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
 
 use crate::errors::*;
 
-pub const USR_SHARE_PATH: &str = "/usr/share/i3status-rust";
-
-pub fn pseudo_uuid() -> usize {
-    static ID: AtomicUsize = AtomicUsize::new(usize::MAX);
-    ID.fetch_sub(1, Ordering::SeqCst)
-}
-
 /// Tries to find a file in standard locations:
-/// - Fist try to find a file by full path
-/// - Then try XDG_CONFIG_HOME
-/// - Then try `~/.local/share/`
+/// - Fist try to find a file by full path (only if path is absolute)
+/// - Then try XDG_CONFIG_HOME (e.g. `~/.config`)
+/// - Then try XDG_DATA_HOME (e.g. `~/.local/share/`)
 /// - Then try `/usr/share/`
 ///
-/// Automaticaly append an extension if not presented.
+/// Automatically append an extension if not presented.
 pub fn find_file(file: &str, subdir: Option<&str>, extension: Option<&str>) -> Option<PathBuf> {
-    // Set (or update) the extension
-    let mut file = PathBuf::from(file);
-    if let Some(extension) = extension {
-        file.set_extension(extension);
+    let file = Path::new(file);
+
+    if file.is_absolute() && file.exists() {
+        return Some(file.to_path_buf());
     }
 
-    // Try full path
-    if file.exists() {
-        return Some(file);
-    }
-
-    // Try XDG_CONFIG_HOME
-    let mut xdg_config_path = xdg_config_home().join("i3status-rust");
-    if let Some(subdir) = subdir {
-        xdg_config_path = xdg_config_path.join(subdir);
-    }
-    xdg_config_path = xdg_config_path.join(&file);
-    if xdg_config_path.exists() {
-        return Some(xdg_config_path);
-    }
-
-    // Try `~/.local/share/`
-    if let Ok(home) = std::env::var("HOME") {
-        let mut local_share_path = PathBuf::from(home).join(".local/share/i3status-rust");
+    // Try XDG_CONFIG_HOME (e.g. `~/.config`)
+    if let Some(mut xdg_config) = config_dir() {
+        xdg_config.push("i3status-rust");
         if let Some(subdir) = subdir {
-            local_share_path = local_share_path.join(subdir);
+            xdg_config.push(subdir);
         }
-        local_share_path = local_share_path.join(&file);
-        if local_share_path.exists() {
-            return Some(local_share_path);
+        xdg_config.push(file);
+        if let Some(file) = exists_with_opt_extension(&xdg_config, extension) {
+            return Some(file);
+        }
+    }
+
+    // Try XDG_DATA_HOME (e.g. `~/.local/share/`)
+    if let Some(mut xdg_data) = data_dir() {
+        xdg_data.push("i3status-rust");
+        if let Some(subdir) = subdir {
+            xdg_data.push(subdir);
+        }
+        xdg_data.push(file);
+        if let Some(file) = exists_with_opt_extension(&xdg_data, extension) {
+            return Some(file);
         }
     }
 
     // Try `/usr/share/`
-    let mut usr_share_path = PathBuf::from(USR_SHARE_PATH);
+    let mut usr_share_path = PathBuf::from("/usr/share/i3status-rust");
     if let Some(subdir) = subdir {
-        usr_share_path = usr_share_path.join(subdir);
+        usr_share_path.push(subdir);
     }
-    usr_share_path = usr_share_path.join(&file);
-    if usr_share_path.exists() {
-        return Some(usr_share_path);
+    usr_share_path.push(file);
+    if let Some(file) = exists_with_opt_extension(&usr_share_path, extension) {
+        return Some(file);
     }
 
     None
 }
 
-pub fn escape_pango_text(text: &str) -> String {
-    text.chars()
-        .map(|x| match x {
-            '&' => "&amp;".to_string(),
-            '<' => "&lt;".to_string(),
-            '>' => "&gt;".to_string(),
-            '\'' => "&#39;".to_string(),
-            _ => x.to_string(),
-        })
+fn exists_with_opt_extension(file: &Path, extension: Option<&str>) -> Option<PathBuf> {
+    if file.exists() {
+        return Some(file.into());
+    }
+    // If file has no extension, test with given extension
+    if let (None, Some(extension)) = (file.extension(), extension) {
+        let file = file.with_extension(extension);
+        // Check again with extension added
+        if file.exists() {
+            return Some(file);
+        }
+    }
+    None
+}
+
+pub async fn new_dbus_connection() -> Result<zbus::Connection> {
+    zbus::Connection::session()
+        .await
+        .error("Failed to open DBus session connection")
+}
+
+pub async fn new_system_dbus_connection() -> Result<zbus::Connection> {
+    zbus::Connection::system()
+        .await
+        .error("Failed to open DBus system connection")
+}
+
+pub fn deserialize_toml_file<T, P>(path: P) -> Result<T>
+where
+    T: DeserializeOwned,
+    P: AsRef<Path>,
+{
+    let path = path.as_ref();
+
+    let contents = std::fs::read_to_string(path)
+        .or_error(|| format!("Failed to read file: {}", path.display()))?;
+
+    toml::from_str(&contents).map_err(|err| {
+        #[allow(deprecated)]
+        let location_msg = err
+            .span()
+            .map(|span| {
+                let line = 1 + contents.as_bytes()[..(span.start)]
+                    .iter()
+                    .filter(|b| **b == b'\n')
+                    .count();
+                format!(" at line {line}")
+            })
+            .unwrap_or_default();
+        Error::new(format!(
+            "Failed to deserialize TOML file {}{}: {}",
+            path.display(),
+            location_msg,
+            err.message()
+        ))
+    })
+}
+
+pub async fn read_file(path: impl AsRef<Path>) -> std::io::Result<String> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut content = String::new();
+    file.read_to_string(&mut content).await?;
+    Ok(content.trim_end().to_string())
+}
+
+pub async fn has_command(command: &str) -> Result<bool> {
+    Command::new("sh")
+        .args([
+            "-c",
+            format!("command -v {command} >/dev/null 2>&1").as_ref(),
+        ])
+        .status()
+        .await
+        .or_error(|| format!("Failed to check {command} presence"))
+        .map(|status| status.success())
+}
+
+/// # Example
+///
+/// ```ignore
+/// let opt = Some(1);
+/// let map: HashMap<&'static str, String> = map! {
+///     "key" => "value",
+///     [if true] "hello" => "world",
+///     [if let Some(x) = opt] "opt" => x.to_string(),
+/// };
+/// ```
+#[macro_export]
+macro_rules! map {
+    ($( $([$($cond_tokens:tt)*])? $key:literal => $value:expr ),* $(,)?) => {{
+        #[allow(unused_mut)]
+        let mut m = ::std::collections::HashMap::new();
+        $(
+        map!(@insert m, $key, $value $(,$($cond_tokens)*)?);
+        )*
+        m
+    }};
+    (@insert $map:ident, $key:expr, $value:expr) => {{
+        $map.insert($key.into(), $value.into());
+    }};
+    (@insert $map:ident, $key:expr, $value:expr, if $cond:expr) => {{
+        if $cond {
+        $map.insert($key.into(), $value.into());
+        }
+    }};
+    (@insert $map:ident, $key:expr, $value:expr, if let $pat:pat = $match_on:expr) => {{
+        if let $pat = $match_on {
+        $map.insert($key.into(), $value.into());
+        }
+    }};
+}
+
+pub use map;
+
+macro_rules! regex {
+    ($re:literal $(,)?) => {{
+        static RE: once_cell::sync::OnceCell<regex::Regex> = once_cell::sync::OnceCell::new();
+        RE.get_or_init(|| regex::Regex::new($re).unwrap())
+    }};
+}
+
+macro_rules! make_log_macro {
+    (@wdoll $macro_name:ident, $block_name:literal, ($dol:tt)) => {
+        #[allow(dead_code)]
+        macro_rules! $macro_name {
+            ($dol($args:tt)+) => {
+                ::log::$macro_name!(target: $block_name, $dol($args)+);
+            };
+        }
+    };
+    ($macro_name:ident, $block_name:literal) => {
+        make_log_macro!(@wdoll $macro_name, $block_name, ($));
+    };
+}
+
+pub fn format_bar_graph(content: &[f64]) -> String {
+    // (x * one eighth block) https://en.wikipedia.org/wiki/Block_Elements
+    static BARS: [char; 8] = [
+        '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
+
+    // Find min and max
+    let mut min = std::f64::INFINITY;
+    let mut max = -std::f64::INFINITY;
+    for &v in content {
+        min = min.min(v);
+        max = max.max(v);
+    }
+
+    let range = max - min;
+    content
+        .iter()
+        .map(|x| BARS[((x - min) / range * 7.).clamp(0., 7.) as usize])
         .collect()
 }
 
-pub fn battery_level_to_icon(charge_level: Result<u64>, fallback_icons: bool) -> &'static str {
-    // TODO remove fallback in next release
-    if fallback_icons {
-        match charge_level {
-            Ok(0..=5) => "bat_empty",
-            Ok(6..=25) => "bat_quarter",
-            Ok(26..=50) => "bat_half",
-            Ok(51..=75) => "bat_three_quarters",
-            _ => "bat_full",
-        }
-    } else {
-        match charge_level {
-            Ok(0..=10) => "bat_10",
-            Ok(11..=20) => "bat_20",
-            Ok(21..=30) => "bat_30",
-            Ok(31..=40) => "bat_40",
-            Ok(41..=50) => "bat_50",
-            Ok(51..=60) => "bat_60",
-            Ok(61..=70) => "bat_70",
-            Ok(71..=80) => "bat_80",
-            Ok(81..=90) => "bat_90",
-            _ => "bat_full",
-        }
-    }
-}
-
-pub fn xdg_config_home() -> PathBuf {
-    // In the unlikely event that $HOME is not set, it doesn't really matter
-    // what we fall back on, so use /.config.
-    PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap_or(format!(
-        "{}/.config",
-        std::env::var("HOME").unwrap_or_default()
-    )))
-}
-
-pub fn deserialize_file<T>(path: &Path) -> Result<T>
-where
-    T: DeserializeOwned,
-{
-    let file = path.to_str().unwrap();
-    let mut contents = String::new();
-    let mut file =
-        BufReader::new(File::open(file).map_error_msg(|_| format!("failed to open file: {file}"))?);
-    file.read_to_string(&mut contents)
-        .error_msg("failed to read file")?;
-    toml::from_str(&contents).error_msg("failed to parse TOML from file contents")
-}
-
-pub fn read_file(path: impl AsRef<Path>) -> Result<String> {
-    let mut f = OpenOptions::new()
-        .read(true)
-        .open(path.as_ref())
-        .map_error_msg(|_| format!("failed to open file {}", path.as_ref().display()))?;
-    let mut content = String::new();
-    f.read_to_string(&mut content)
-        .map_error_msg(|_| format!("failed to read {}", path.as_ref().display()))?;
-    // Removes trailing newline
-    content.pop();
-    Ok(content)
-}
-
-pub fn has_command(command: &str) -> Result<bool> {
-    let exit_status = Command::new("sh")
-        .args(&[
-            "-c",
-            format!("command -v {} >/dev/null 2>&1", command).as_ref(),
-        ])
-        .status()
-        .map_error_msg(|_| format!("failed to start command to check for {command}"))?;
-    Ok(exit_status.success())
-}
-
-macro_rules! map {
-    ($($key:expr => $value:expr),+ $(,)*) => {{
-        let mut m = ::std::collections::HashMap::new();
-        $(m.insert($key, $value);)+
-        m
-    }};
-}
-
-macro_rules! map_to_owned {
-    ($($key:expr => $value:expr),+ $(,)*) => {{
-        let mut m = ::std::collections::HashMap::new();
-        $(m.insert($key.to_owned(), $value.to_owned());)+
-        m
-    }};
-}
-
-// Convert 2 letter country code to Unicode
+/// Convert 2 letter country code to Unicode
 pub fn country_flag_from_iso_code(country_code: &str) -> String {
-    if country_code.len() != 2 || !country_code.chars().all(|c| c.is_ascii_uppercase()) {
-        return country_code.to_string();
+    let [mut b1, mut b2]: [u8; 2] = country_code.as_bytes().try_into().unwrap_or([0, 0]);
+
+    if !b1.is_ascii_uppercase() || !b2.is_ascii_uppercase() {
+        return country_code.into();
     }
-    let bytes = country_code.as_bytes(); // Sane as we verified before that it's ASCII
 
     // Each char is encoded as 1F1E6 to 1F1FF for A-Z
-    let c1 = bytes[0] + 0xa5;
-    let c2 = bytes[1] + 0xa5;
+    b1 += 0xa5;
+    b2 += 0xa5;
     // The last byte will always start with 101 (0xa0) and then the 5 least
     // significant bits from the previous result
-    let b1 = 0xa0 | (c1 & 0x1f);
-    let b2 = 0xa0 | (c2 & 0x1f);
+    b1 = 0xa0 | (b1 & 0x1f);
+    b2 = 0xa0 | (b2 & 0x1f);
     // Get the flag string from the UTF-8 representation of our Unicode characters.
     String::from_utf8(vec![0xf0, 0x9f, 0x87, b1, 0xf0, 0x9f, 0x87, b2]).unwrap()
 }
 
-pub fn notify(short: &str, long: &str) {
-    let _ = Command::new("notify-send").args([short, long]).output();
-}
-
-pub fn expand_string(s: &str) -> Result<String> {
-    shellexpand::full(s)
-        .error_msg("Failed to expand string")
-        .map(Into::into)
+/// A shorcut for `Default::default()`
+/// See <https://github.com/rust-lang/rust/issues/73014>
+#[inline]
+pub fn default<T: Default>() -> T {
+    Default::default()
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::util::{country_flag_from_iso_code, has_command};
+    use super::*;
 
-    #[test]
-    // we assume sh is always available
-    fn test_has_command_ok() {
-        let has_command = has_command("sh");
-        assert!(has_command.is_ok());
-        let has_command = has_command.unwrap();
-        assert!(has_command);
+    #[tokio::test]
+    async fn test_has_command_ok() {
+        // we assume sh is always available
+        assert!(has_command("sh").await.unwrap());
     }
 
-    #[test]
-    // we assume thequickbrownfoxjumpsoverthelazydog command does not exist
-    fn test_has_command_err() {
-        let has_command = has_command("thequickbrownfoxjumpsoverthelazydog");
-        assert!(has_command.is_ok());
-        let has_command = has_command.unwrap();
-        assert!(!has_command)
+    #[tokio::test]
+    async fn test_has_command_err() {
+        // we assume thequickbrownfoxjumpsoverthelazydog command does not exist
+        assert!(!has_command("thequickbrownfoxjumpsoverthelazydog")
+            .await
+            .unwrap());
     }
 
     #[test]

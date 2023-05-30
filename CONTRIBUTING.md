@@ -65,18 +65,22 @@ We will generally squash PRs that have commits like "fix typo", "updates", etc.
 To avoid this, make your commit messages clear and the commits themselves as
 targeted as possible. Use `git rebase` if you need to do this after the fact.
 
-Please format your code with `rustfmt` before submitting a PR.  The easiest way
-to do this is by running `cargo fmt`.
+Please format your code with `rustfmt` before submitting a PR. Note that `cargo fmt`
+unfortunately does not format files which are included via macros (in our case the `define_blocks!` macro in `blocks.rs`),
+so if you don't use `rust_analyzer`, you have to run `rustfmt --edition 2021 <file>`.
+
+We also include a configuration file for [pre-commit](https://pre-commit.com/),
+which you can use locally to run several checks including looking for spelling errors 
+and making sure that `cargo fmt` has been run.
+These same checks will be run as a github action, but it may save time to run them locally first.
 
 ## Maintainership
 
-i3status-rust is currently maintained by Kai Greshake and Aaron Jacobs, neither
-of whom have unlimited time to devote to the project. If you are interested in
-taking on a more active community role -- e.g. triaging issues or reviewing pull
-requests -- please feel free to reach out to us.
+If you are interested in taking on a more active community role -- e.g. triaging 
+issues or reviewing pull requests -- please feel free to reach out to us.
 
 ## License
 
 This project is licensed under the terms of the GPLv3, and any contribution you
-make will be understood to be the same. See the [LICENSE.md](LICENSE.md) file
+make will be understood to be the same. See the [LICENSE](LICENSE) file
 for details on these terms.

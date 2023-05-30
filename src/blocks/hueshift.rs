@@ -1,244 +1,180 @@
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+//! Manage display temperature
+//!
+//! This block displays the current color temperature in Kelvin. When scrolling upon the block the color temperature is changed.
+//! A left click on the block sets the color temperature to `click_temp` that is by default to `6500K`.
+//! A right click completely resets the color temperature to its default value (`6500K`).
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `format`      | A string to customise the output of this block. See below for available placeholders. | `" $temperature "`
+//! `step`        | The step color temperature is in/decreased in Kelvin. | `100`
+//! `hue_shifter` | Program used to control screen color. | Detect automatically
+//! `max_temp`    | Max color temperature in Kelvin. | `10000`
+//! `min_temp`    | Min color temperature in Kelvin. | `1000`
+//! `click_temp`  | Left click color temperature in Kelvin. | `6500`
+//!
+//! Placeholder           | Value                        | Type   | Unit
+//! ----------------------|------------------------------|--------|---------------
+//! `temperature`         | Current temperature          | Number | -
+//!
+//! Action             | Default button
+//! -------------------|---------------
+//! `set_click_temp`   | Left
+//! `reset`            | Right
+//! `temperature_up`   | Wheel Up
+//! `temperature_down` | Wheel Down
+//!
+//! # Available Hue Shifters
+//!
+//! Name                 | Supports
+//! ---------------------|---------
+//! `"redshift"`         | X11
+//! `"sct"`              | X11
+//! `"gammastep"`        | X11 and Wayland
+//! `"wl_gammarelay"`    | Wayland
+//! `"wl_gammarelay_rs"` | Wayland
+//! `"wlsunset"`         | Wayland
+//!
+//! Note that at the moment, only [`wl_gammarelay`](https://github.com/jeremija/wl-gammarelay) and
+//! [`wl_gammarelay_rs`](https://github.com/MaxVerevkin/wl-gammarelay-rs)
+//! subscribe to the events and update the bar when the temperature is modified externally. Also,
+//! these are the only drivers at the moment that work under Wayland without flickering.
+//!
+//! # Example
+//!
+//! ```toml
+//! [[block]]
+//! block = "hueshift"
+//! hue_shifter = "redshift"
+//! step = 50
+//! click_temp = 3500
+//! ```
+//!
+//! A hard limit is set for the `max_temp` to `10000K` and the same for the `min_temp` which is `1000K`.
+//! The `step` has a hard limit as well, defined to `500K` to avoid too brutal changes.
 
-use crossbeam_channel::Sender;
-use dbus::arg::RefArg;
-use dbus::ffidisp::stdintf::OrgFreedesktopDBusProperties;
-use serde_derive::Deserialize;
-
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::config::{LogicalDirection, Scrolling};
-use crate::de::deserialize_duration;
-use crate::errors::*;
-use crate::protocol::i3bar_event::{I3BarEvent, MouseButton};
-use crate::scheduler::Task;
-use crate::subprocess::spawn_child_async;
+use super::prelude::*;
+use crate::subprocess::{spawn_process, spawn_shell};
 use crate::util::has_command;
-use crate::widgets::text::TextWidget;
-use crate::widgets::I3BarWidget;
+use futures::future::pending;
 
-pub struct Hueshift {
-    text: TextWidget,
-    // update_interval: Duration,
-    step: u16,
-    current_temp: u16,
-    max_temp: u16,
-    min_temp: u16,
-    hue_shift_driver: Box<dyn HueShiftDriver>,
-    click_temp: u16,
-    scrolling: Scrolling,
-}
-
-trait HueShiftDriver {
-    fn update(&self, temp: u16) -> Result<()>;
-    fn reset(&self) -> Result<()>;
-    fn get_current_temperature(&mut self) -> Result<Option<u16>> {
-        Ok(None)
-    }
-}
-struct Redshift();
-impl HueShiftDriver for Redshift {
-    fn update(&self, temp: u16) -> Result<()> {
-        spawn_child_async(
-            "sh",
-            &[
-                "-c",
-                format!("redshift -O {} -P >/dev/null 2>&1", temp).as_str(),
-            ],
-        )
-        .error_msg("Failed to set new color temperature using redshift")?;
-        Ok(())
-    }
-    fn reset(&self) -> Result<()> {
-        spawn_child_async("sh", &["-c", "redshift -x >/dev/null 2>&1"])
-            .error_msg("Failed to set new color temperature using redshift")?;
-        Ok(())
-    }
-}
-struct Sct();
-impl HueShiftDriver for Sct {
-    fn update(&self, temp: u16) -> Result<()> {
-        spawn_child_async(
-            "sh",
-            &["-c", format!("sct {} >/dev/null 2>&1", temp).as_str()],
-        )
-        .error_msg("Failed to set new color temperature using sct")?;
-        Ok(())
-    }
-    fn reset(&self) -> Result<()> {
-        spawn_child_async("sh", &["-c", "sct >/dev/null 2>&1"])
-            .error_msg("Failed to set new color temperature using sct")?;
-        Ok(())
-    }
-}
-struct Gammastep();
-impl HueShiftDriver for Gammastep {
-    fn update(&self, temp: u16) -> Result<()> {
-        spawn_child_async(
-            "sh",
-            &[
-                "-c",
-                &format!("pkill gammastep; gammastep -O {} -P &", temp),
-            ],
-        )
-        .error_msg("Failed to set new color temperature using gammastep")
-    }
-    fn reset(&self) -> Result<()> {
-        spawn_child_async("sh", &["-c", "gammastep -x >/dev/null 2>&1"])
-            .error_msg("Failed to set new color temperature using gammastep")
-    }
-}
-struct Wlsunset();
-impl HueShiftDriver for Wlsunset {
-    fn update(&self, temp: u16) -> Result<()> {
-        // wlsunset does not have a oneshot option, so set both day and
-        // night temperature. wlsunset dose not allow for day and night
-        // temperatures to be the same, so increment the day temperature.
-        spawn_child_async(
-            "sh",
-            &[
-                "-c",
-                &format!("pkill wlsunset; wlsunset -T {} -t {} &", temp + 1, temp),
-            ],
-        )
-        .error_msg("Failed to set new color temperature using wlsunset")?;
-        Ok(())
-    }
-    fn reset(&self) -> Result<()> {
-        // wlsunset does not have a reset option, so just kill the process.
-        // Trying to call wlsunset without any arguments uses the defaults:
-        // day temp: 6500K
-        // night temp: 4000K
-        // latitude/longitude: NaN
-        //     ^ results in sun_condition == POLAR_NIGHT at time of testing
-        // With these defaults, this results in the the color temperature
-        // getting set to 4000K.
-        spawn_child_async("sh", &["-c", "pkill wlsunset > /dev/null 2>&1"])
-            .error_msg("Failed to set new color temperature using wlsunset")?;
-        Ok(())
-    }
+#[derive(Deserialize, Debug, SmartDefault)]
+#[serde(deny_unknown_fields, default)]
+pub struct Config {
+    pub format: FormatConfig,
+    // TODO: Document once this option becomes usefull
+    #[default(5.into())]
+    pub interval: Seconds,
+    #[default(10_000)]
+    pub max_temp: u16,
+    #[default(1_000)]
+    pub min_temp: u16,
+    // TODO: Remove (this option is undocumented)
+    #[default(6_500)]
+    pub current_temp: u16,
+    pub hue_shifter: Option<HueShifter>,
+    #[default(100)]
+    pub step: u16,
+    #[default(6_500)]
+    pub click_temp: u16,
 }
 
-struct WlGammarelay {
-    con: dbus::ffidisp::Connection,
-    current_temperature: Arc<AtomicU16>,
-}
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    api.set_default_actions(&[
+        (MouseButton::Left, None, "set_click_temp"),
+        (MouseButton::Right, None, "reset"),
+        (MouseButton::WheelUp, None, "temperature_up"),
+        (MouseButton::WheelDown, None, "temperature_down"),
+    ])
+    .await?;
 
-impl WlGammarelay {
-    fn attempt_to_get_current_temperature(
-        con: &dbus::ffidisp::Connection,
-        delay: u64,
-        max_attempts: usize,
-    ) -> Result<u16> {
-        for attempt in 1..=max_attempts {
-            match con
-                .with_path("rs.wl-gammarelay", "/", 1000)
-                .get::<u16>("rs.wl.gammarelay", "Temperature")
-            {
-                Ok(temperature) => {
-                    return Ok(temperature);
-                }
-                Err(_) => {
-                    if attempt == max_attempts {
-                        return Err(Error::new(
-                            "Unable to get current temperature for rs.wl.gammarelay",
-                        ));
-                    } else {
-                        thread::sleep(Duration::from_millis(delay));
+    let format = config.format.with_default(" $temperature ")?;
+
+    // limit too big steps at 500K to avoid too brutal changes
+    let step = config.step.min(500);
+    let max_temp = config.max_temp.min(10_000);
+    let min_temp = config.min_temp.clamp(1_000, max_temp);
+
+    let hue_shifter = match config.hue_shifter {
+        Some(driver) => driver,
+        None => {
+            if has_command("wl-gammarelay-rs").await? {
+                HueShifter::WlGammarelayRs
+            } else if has_command("wl-gammarelay").await? {
+                HueShifter::WlGammarelay
+            } else if has_command("redshift").await? {
+                HueShifter::Redshift
+            } else if has_command("sct").await? {
+                HueShifter::Sct
+            } else if has_command("gammastep").await? {
+                HueShifter::Gammastep
+            } else if has_command("wlsunset").await? {
+                HueShifter::Wlsunset
+            } else {
+                return Err(Error::new("Could not detect driver program"));
+            }
+        }
+    };
+
+    let mut driver: Box<dyn HueShiftDriver> = match hue_shifter {
+        HueShifter::Redshift => Box::new(Redshift::new(config.interval)),
+        HueShifter::Sct => Box::new(Sct::new(config.interval)),
+        HueShifter::Gammastep => Box::new(Gammastep::new(config.interval)),
+        HueShifter::Wlsunset => Box::new(Wlsunset::new(config.interval)),
+        HueShifter::WlGammarelay => Box::new(WlGammarelayRs::new("wl-gammarelay").await?),
+        HueShifter::WlGammarelayRs => Box::new(WlGammarelayRs::new("wl-gammarelay-rs").await?),
+    };
+
+    let mut current_temp = driver.get().await?.unwrap_or(config.current_temp);
+
+    loop {
+        let mut widget = Widget::new().with_format(format.clone());
+        widget.set_values(map!("temperature" => Value::number(current_temp)));
+        api.set_widget(widget).await?;
+
+        select! {
+            update = driver.receive_update() => {
+                current_temp = update?;
+            }
+            event = api.event() => {
+                match event {
+                    UpdateRequest => {
+                        if let Some(val) = driver.get().await? {
+                            current_temp = val;
+                        }
                     }
+                    Action(a) if a == "set_click_temp" => {
+                        current_temp = config.click_temp;
+                        driver.update(current_temp).await?;
+                    }
+                    Action(a) if a == "reset" => {
+                        if max_temp > 6500 {
+                            current_temp = 6500;
+                            driver.reset().await?;
+                        } else {
+                            current_temp = max_temp;
+                            driver.update(current_temp).await?;
+                        }
+                    }
+                    Action(a) if a == "temperature_up" => {
+                        current_temp = (current_temp + step).min(max_temp);
+                        driver.update(current_temp).await?;
+                    }
+                    Action(a) if a == "temperature_down" => {
+                        current_temp = current_temp.saturating_sub(step).max(min_temp);
+                        driver.update(current_temp).await?;
+                    }
+                    _ => (),
                 }
             }
         }
-        Ok(0)
-    }
-
-    fn new(command: &str, id: usize, update_request: Sender<Task>) -> Result<Self> {
-        spawn_child_async(
-            "sh",
-            &["-c", format!("{} >/dev/null 2>&1", command).as_str()],
-        )
-        .error_msg(format!("Failed to start {command}"))?;
-        let con = dbus::ffidisp::Connection::new_session()
-            .error_msg("Failed to establish D-Bus connection.")?;
-
-        let current_temperature: Arc<AtomicU16> = Arc::new(AtomicU16::new(
-            WlGammarelay::attempt_to_get_current_temperature(&con, 100, 5)?,
-        ));
-
-        {
-            let current_temperature = current_temperature.clone();
-            thread::Builder::new()
-                .name("hueshift".into())
-                .spawn(move || {
-                    let con = dbus::ffidisp::Connection::new_session()
-                        .expect("Failed to establish D-Bus connection.");
-
-                    con.add_match(
-                        "type='signal',\
-                            interface='org.freedesktop.DBus.Properties',\
-                            member='PropertiesChanged',\
-                            arg0namespace='rs.wl.gammarelay'",
-                    )
-                    .expect("Failed to add D-Bus match rule.");
-
-                    // First we're going to get an (irrelevant) NameAcquired event.
-                    con.incoming(10_000).next();
-
-                    loop {
-                        if let Some(message) = con.incoming(10_000).next() {
-                            if let (_, Some(changed_properties)) =
-                                message.get2::<String, dbus::arg::PropMap>()
-                            {
-                                if let Some(temperature_variant) =
-                                    changed_properties.get("Temperature")
-                                {
-                                    if let Some(temperature) = temperature_variant.as_u64() {
-                                        let temperature = temperature as u16;
-                                        current_temperature.store(temperature, Ordering::SeqCst);
-                                        update_request
-                                            .send(Task {
-                                                id,
-                                                update_time: Instant::now(),
-                                            })
-                                            .unwrap();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                })
-                .unwrap();
-        }
-
-        Ok(WlGammarelay {
-            con,
-            current_temperature,
-        })
-    }
-}
-
-impl HueShiftDriver for WlGammarelay {
-    fn update(&self, temp: u16) -> Result<()> {
-        self.con
-            .with_path("rs.wl-gammarelay", "/", 1000)
-            .set("rs.wl.gammarelay", "Temperature", temp)
-            .error_msg("failed to update temperature")
-    }
-    fn reset(&self) -> Result<()> {
-        // wl-gammarelay does not have a reset option just set the temp back to 6500
-        self.update(6500)
-    }
-
-    fn get_current_temperature(&mut self) -> Result<Option<u16>> {
-        Ok(Some(self.current_temperature.load(Ordering::SeqCst)))
     }
 }
 
 #[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum HueShifter {
     Redshift,
     Sct,
@@ -248,179 +184,212 @@ pub enum HueShifter {
     WlGammarelayRs,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields, default)]
-pub struct HueshiftConfig {
-    /// Update interval in seconds
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub interval: Duration,
-
-    pub max_temp: u16,
-    pub min_temp: u16,
-
-    // TODO: Detect currently defined temperature
-    /// Currently defined temperature default to 6500K.
-    pub current_temp: u16,
-
-    /// Can be set by user as an option.
-    pub hue_shifter: Option<HueShifter>,
-
-    /// Default to 100K, cannot go over 500K.
-    pub step: u16,
-    pub click_temp: u16,
+#[async_trait]
+trait HueShiftDriver {
+    async fn get(&mut self) -> Result<Option<u16>>;
+    async fn update(&mut self, temp: u16) -> Result<()>;
+    async fn reset(&mut self) -> Result<()>;
+    async fn receive_update(&mut self) -> Result<u16>;
 }
 
-impl Default for HueshiftConfig {
-    fn default() -> Self {
-        Self {
-            interval: Duration::from_secs(5),
-            max_temp: 10_000,
-            min_temp: 1_000,
-            current_temp: 6_500,
-            hue_shifter: if has_command("redshift").unwrap_or(false) {
-                Some(HueShifter::Redshift)
-            } else if has_command("sct").unwrap_or(false) {
-                Some(HueShifter::Sct)
-            } else if has_command("gammastep").unwrap_or(false) {
-                Some(HueShifter::Gammastep)
-            } else if has_command("wlsunset").unwrap_or(false) {
-                Some(HueShifter::Wlsunset)
-            } else if has_command("wl-gammarelay-rs").unwrap_or(false) {
-                Some(HueShifter::WlGammarelayRs)
-            } else if has_command("wl-gammarelay").unwrap_or(false) {
-                Some(HueShifter::WlGammarelay)
-            } else {
-                None
-            },
-            step: 100,
-            click_temp: 6_500,
-        }
+struct Redshift {
+    interval: Seconds,
+}
+
+impl Redshift {
+    fn new(interval: Seconds) -> Self {
+        Self { interval }
     }
 }
 
-impl ConfigBlock for Hueshift {
-    type Config = HueshiftConfig;
-
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        update_request: Sender<Task>,
-    ) -> Result<Self> {
-        let current_temp = block_config.current_temp;
-        let mut step = block_config.step;
-        let mut max_temp = block_config.max_temp;
-        let mut min_temp = block_config.min_temp;
-        // limit too big steps at 500K to avoid too brutal changes
-        if step > 500 {
-            step = 500;
-        }
-        if block_config.max_temp > 10_000 {
-            max_temp = 10_000;
-        }
-        if block_config.min_temp < 1000 || block_config.min_temp > block_config.max_temp {
-            min_temp = 1000;
-        }
-
-        let hue_shifter = block_config
-            .hue_shifter
-            .error_msg("Cound not detect driver program")?;
-
-        let hue_shift_driver: Box<dyn HueShiftDriver> = match hue_shifter {
-            HueShifter::Redshift => Box::new(Redshift {}),
-            HueShifter::Sct => Box::new(Sct {}),
-            HueShifter::Gammastep => Box::new(Gammastep {}),
-            HueShifter::Wlsunset => Box::new(Wlsunset {}),
-            HueShifter::WlGammarelayRs => {
-                Box::new(WlGammarelay::new("wl-gammarelay-rs", id, update_request)?)
-            }
-            HueShifter::WlGammarelay => {
-                Box::new(WlGammarelay::new("wl-gammarelay", id, update_request)?)
-            }
-        };
-
-        Ok(Hueshift {
-            // update_interval: block_config.interval,
-            step,
-            max_temp,
-            min_temp,
-            current_temp,
-            hue_shift_driver,
-            click_temp: block_config.click_temp,
-            scrolling: shared_config.scrolling,
-            text: TextWidget::new(id, 0, shared_config).with_text(&current_temp.to_string()),
-        })
-    }
-}
-
-impl Block for Hueshift {
-    fn name(&self) -> &'static str {
-        "hueshift"
-    }
-
-    fn update(&mut self) -> Result<Option<Update>> {
-        if let Some(current_temp) = self.hue_shift_driver.get_current_temperature()? {
-            self.current_temp = current_temp;
-        }
-        self.text.set_text(self.current_temp.to_string());
-        // If drivers have a way of polling for the current temperature then it
-        // makes sense to have an update interval otherwise it has no effect.
-        // None of the drivers besides WlGammarelay has a mechanism to get the
-        // current temperature if they are changed outside of the statusbar.
-        // Although WlGammarelay can get the current temperature it doesn't need
-        // to run update on an update interval as it is listening to dbus events.
-        // Something like this:
-        // Ok(match self.hue_shifter {
-        // HueShifter::X | HueShifter::Y => Some(self.update_interval.into()),
-        // _ => None,
-        // })
+#[async_trait]
+impl HueShiftDriver for Redshift {
+    async fn get(&mut self) -> Result<Option<u16>> {
+        // TODO
         Ok(None)
     }
-
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![&self.text]
+    async fn update(&mut self, temp: u16) -> Result<()> {
+        spawn_process("redshift", &["-O", &temp.to_string(), "-P"])
+            .error("Failed to set new color temperature using redshift.")
     }
-
-    fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        match event.button {
-            MouseButton::Left => {
-                self.current_temp = self.click_temp;
-                self.hue_shift_driver.update(self.current_temp)?;
-                self.text.set_text(self.current_temp.to_string());
-            }
-            MouseButton::Right => {
-                if self.max_temp > 6500 {
-                    self.current_temp = 6500;
-                    self.hue_shift_driver.reset()?;
-                } else {
-                    self.current_temp = self.max_temp;
-                    self.hue_shift_driver.update(self.current_temp)?;
-                }
-                self.text.set_text(self.current_temp.to_string());
-            }
-            mb => {
-                use LogicalDirection::*;
-                let new_temp: u16;
-                match self.scrolling.to_logical_direction(mb) {
-                    Some(Up) => {
-                        new_temp = self.current_temp + self.step;
-                        if new_temp <= self.max_temp {
-                            self.hue_shift_driver.update(new_temp)?;
-                            self.current_temp = new_temp;
-                        }
-                    }
-                    Some(Down) => {
-                        new_temp = self.current_temp - self.step;
-                        if new_temp >= self.min_temp {
-                            self.hue_shift_driver.update(new_temp)?;
-                            self.current_temp = new_temp;
-                        }
-                    }
-                    None => return Ok(()), // avoid updating text
-                }
-                self.text.set_text(self.current_temp.to_string());
-            }
-        }
-        Ok(())
+    async fn reset(&mut self) -> Result<()> {
+        spawn_process("redshift", &["-x"])
+            .error("Failed to set new color temperature using redshift.")
     }
+    async fn receive_update(&mut self) -> Result<u16> {
+        sleep(self.interval.0).await;
+        // self.get().await
+        pending().await
+    }
+}
+
+struct Sct {
+    interval: Seconds,
+}
+
+impl Sct {
+    fn new(interval: Seconds) -> Self {
+        Self { interval }
+    }
+}
+
+#[async_trait]
+impl HueShiftDriver for Sct {
+    async fn get(&mut self) -> Result<Option<u16>> {
+        // TODO
+        Ok(None)
+    }
+    async fn update(&mut self, temp: u16) -> Result<()> {
+        spawn_shell(&format!("sct {temp} >/dev/null 2>&1"))
+            .error("Failed to set new color temperature using sct.")
+    }
+    async fn reset(&mut self) -> Result<()> {
+        spawn_process("sct", &[]).error("Failed to set new color temperature using sct.")
+    }
+    async fn receive_update(&mut self) -> Result<u16> {
+        sleep(self.interval.0).await;
+        // self.get().await
+        pending().await
+    }
+}
+
+struct Gammastep {
+    interval: Seconds,
+}
+
+impl Gammastep {
+    fn new(interval: Seconds) -> Self {
+        Self { interval }
+    }
+}
+
+#[async_trait]
+impl HueShiftDriver for Gammastep {
+    async fn get(&mut self) -> Result<Option<u16>> {
+        // TODO
+        Ok(None)
+    }
+    async fn update(&mut self, temp: u16) -> Result<()> {
+        spawn_shell(&format!("killall gammastep; gammastep -O {temp} -P &",))
+            .error("Failed to set new color temperature using gammastep.")
+    }
+    async fn reset(&mut self) -> Result<()> {
+        spawn_process("gammastep", &["-x"])
+            .error("Failed to set new color temperature using gammastep.")
+    }
+    async fn receive_update(&mut self) -> Result<u16> {
+        sleep(self.interval.0).await;
+        // self.get().await
+        pending().await
+    }
+}
+
+struct Wlsunset {
+    interval: Seconds,
+}
+
+impl Wlsunset {
+    fn new(interval: Seconds) -> Self {
+        Self { interval }
+    }
+}
+
+#[async_trait]
+impl HueShiftDriver for Wlsunset {
+    async fn get(&mut self) -> Result<Option<u16>> {
+        // TODO
+        Ok(None)
+    }
+    async fn update(&mut self, temp: u16) -> Result<()> {
+        // wlsunset does not have a oneshot option, so set both day and
+        // night temperature. wlsunset dose not allow for day and night
+        // temperatures to be the same, so increment the day temperature.
+        spawn_shell(&format!(
+            "killall wlsunset; wlsunset -T {} -t {} &",
+            temp + 1,
+            temp
+        ))
+        .error("Failed to set new color temperature using wlsunset.")
+    }
+    async fn reset(&mut self) -> Result<()> {
+        // wlsunset does not have a reset option, so just kill the process.
+        // Trying to call wlsunset without any arguments uses the defaults:
+        // day temp: 6500K
+        // night temp: 4000K
+        // latitude/longitude: NaN
+        //     ^ results in sun_condition == POLAR_NIGHT at time of testing
+        // With these defaults, this results in the the color temperature
+        // getting set to 4000K.
+        spawn_process("killall", &["wlsunset"])
+            .error("Failed to set new color temperature using wlsunset.")
+    }
+    async fn receive_update(&mut self) -> Result<u16> {
+        sleep(self.interval.0).await;
+        // self.get().await
+        pending().await
+    }
+}
+
+struct WlGammarelayRs {
+    proxy: WlGammarelayRsBusProxy<'static>,
+    updates: zbus::PropertyStream<'static, u16>,
+}
+
+impl WlGammarelayRs {
+    async fn new(cmd: &str) -> Result<Self> {
+        // Make sure the daemon is running
+        spawn_process(cmd, &[]).error("Failed to start wl-gammarelay daemon")?;
+        sleep(Duration::from_millis(100)).await;
+
+        let conn = crate::util::new_dbus_connection().await?;
+        let proxy = WlGammarelayRsBusProxy::new(&conn)
+            .await
+            .error("Failed to create wl-gammarelay-rs DBus proxy")?;
+        let updates = proxy.receive_temperature_changed().await;
+        Ok(Self { proxy, updates })
+    }
+}
+
+#[async_trait]
+impl HueShiftDriver for WlGammarelayRs {
+    async fn get(&mut self) -> Result<Option<u16>> {
+        let value = self
+            .proxy
+            .temperature()
+            .await
+            .error("Failed to get temperature")?;
+        Ok(Some(value))
+    }
+    async fn update(&mut self, temp: u16) -> Result<()> {
+        self.proxy
+            .set_temperature(temp)
+            .await
+            .error("Failed to set temperature")
+    }
+    async fn reset(&mut self) -> Result<()> {
+        self.update(6500).await
+    }
+    async fn receive_update(&mut self) -> Result<u16> {
+        let update = self.updates.next().await.error("No next update")?;
+        update.get().await.error("Failed to get temperature")
+    }
+}
+
+#[zbus::dbus_proxy(
+    interface = "rs.wl.gammarelay",
+    default_service = "rs.wl-gammarelay",
+    default_path = "/"
+)]
+trait WlGammarelayRsBus {
+    /// Brightness property
+    #[dbus_proxy(property)]
+    fn brightness(&self) -> zbus::Result<f64>;
+    #[dbus_proxy(property)]
+    fn set_brightness(&self, value: f64) -> zbus::Result<()>;
+
+    /// Temperature property
+    #[dbus_proxy(property)]
+    fn temperature(&self) -> zbus::Result<u16>;
+    #[dbus_proxy(property)]
+    fn set_temperature(&self, value: u16) -> zbus::Result<()>;
 }

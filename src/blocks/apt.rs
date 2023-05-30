@@ -1,196 +1,148 @@
+//! Pending updates available for your Debian/Ubuntu based system
+//!
+//! Behind the scenes this uses `apt`, and in order to run it without root privileges i3status-rust will create its own package database in `/tmp/i3rs-apt/` which may take up several MB or more. If you have a custom apt config then this block may not work as expected - in that case please open an issue.
+//!
+//! Tip: You can grab the list of available updates using `APT_CONFIG=/tmp/i3rs-apt/apt.conf apt list --upgradable`
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `interval` | Update interval in seconds. | `600`
+//! `format` | A string to customise the output of this block. See below for available placeholders. | `" $icon $count.eng(w:1) "`
+//! `format_singular` | Same as `format`, but for when exactly one update is available. | `" $icon $count.eng(w:1) "`
+//! `format_up_to_date` | Same as `format`, but for when no updates are available. | `" $icon $count.eng(w:1) "`
+//! `warning_updates_regex` | Display block as warning if updates matching regex are available. | `None`
+//! `critical_updates_regex` | Display block as critical if updates matching regex are available. | `None`
+//! `ignore_phased_updates` | Doesn't include potentially held back phased updates in the count. | `false`
+//!
+//! Placeholder | Value                       | Type   | Unit
+//! ------------|-----------------------------|--------|------
+//! `icon`      | A static icon               | Icon   | -
+//! `count`     | Number of updates available | Number | -
+//!
+//! # Example
+//!
+//! Update the list of pending updates every thirty minutes (1800 seconds):
+//!
+//! ```toml
+//! [[block]]
+//! block = "apt"
+//! interval = 1800
+//! format = " $icon $count updates available "
+//! format_singular = " $icon One update available "
+//! format_up_to_date = " $icon system up to date "
+//! critical_updates_regex = "(linux|linux-lts|linux-zen)"
+//! [[block.click]]
+//! # shows dmenu with cached available updates. Any dmenu alternative should also work.
+//! button = "left"
+//! cmd = "APT_CONFIG=/tmp/i3rs-apt/apt.conf apt list --upgradable | tail -n +2 | rofi -dmenu"
+//! [[block.click]]
+//! # Updates the block on right click
+//! button = "right"
+//! update = true
+//! ```
+//!
+//! # Icons Used
+//!
+//! - `update`
+
 use std::env;
-use std::fs;
-use std::io::Write;
-use std::process::Command;
-use std::time::Duration;
+use std::process::Stdio;
 
-use crossbeam_channel::Sender;
 use regex::Regex;
-use serde_derive::Deserialize;
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::de::deserialize_duration;
-use crate::errors::*;
-use crate::formatting::value::Value;
-use crate::formatting::FormatTemplate;
-use crate::protocol::i3bar_event::{I3BarEvent, MouseButton};
-use crate::scheduler::Task;
-use crate::widgets::text::TextWidget;
-use crate::widgets::{I3BarWidget, State};
+use tokio::fs::{create_dir_all, File};
+use tokio::process::Command;
 
-pub struct Apt {
-    output: TextWidget,
-    update_interval: Duration,
-    format: FormatTemplate,
-    format_singular: FormatTemplate,
-    format_up_to_date: FormatTemplate,
-    warning_updates_regex: Option<Regex>,
-    critical_updates_regex: Option<Regex>,
-    config_path: String,
-}
+use super::prelude::*;
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, SmartDefault)]
 #[serde(deny_unknown_fields, default)]
-pub struct AptConfig {
-    /// Update interval in seconds
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub interval: Duration,
-
-    /// Format override
-    pub format: FormatTemplate,
-
-    /// Alternative format override for when exactly 1 update is available
-    pub format_singular: FormatTemplate,
-
-    /// Alternative format override for when no updates are available
-    pub format_up_to_date: FormatTemplate,
-
-    /// Indicate a `warning` state for the block if any pending update match the
-    /// following regex. Default behaviour is that no package updates are deemed
-    /// warning
+pub struct Config {
+    #[default(600.into())]
+    pub interval: Seconds,
+    pub format: FormatConfig,
+    pub format_singular: FormatConfig,
+    pub format_up_to_date: FormatConfig,
     pub warning_updates_regex: Option<String>,
-
-    /// Indicate a `critical` state for the block if any pending update match the following regex.
-    /// Default behaviour is that no package updates are deemed critical
     pub critical_updates_regex: Option<String>,
+    pub ignore_phased_updates: bool,
 }
 
-impl Default for AptConfig {
-    fn default() -> Self {
-        Self {
-            interval: Duration::from_secs(600),
-            format: FormatTemplate::default(),
-            format_singular: FormatTemplate::default(),
-            format_up_to_date: FormatTemplate::default(),
-            warning_updates_regex: None,
-            critical_updates_regex: None,
-        }
-    }
-}
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    let format = config.format.with_default(" $icon $count.eng(w:1) ")?;
+    let format_singular = config
+        .format_singular
+        .with_default(" $icon $count.eng(w:1) ")?;
+    let format_up_to_date = config
+        .format_up_to_date
+        .with_default(" $icon $count.eng(w:1) ")?;
 
-impl ConfigBlock for Apt {
-    type Config = AptConfig;
+    let warning_updates_regex = config
+        .warning_updates_regex
+        .as_deref()
+        .map(Regex::new)
+        .transpose()
+        .error("invalid warning updates regex")?;
+    let critical_updates_regex = config
+        .critical_updates_regex
+        .as_deref()
+        .map(Regex::new)
+        .transpose()
+        .error("invalid critical updates regex")?;
 
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        _tx_update_request: Sender<Task>,
-    ) -> Result<Self> {
-        let mut cache_dir = env::temp_dir();
-        cache_dir.push("i3rs-apt");
-        if !cache_dir.exists() {
-            fs::create_dir(&cache_dir).error_msg("Failed to create temp dir")?;
-        }
-
-        let apt_conf = format!(
-            "Dir::State \"{}\";\n
-             Dir::State::lists \"lists\";\n
-             Dir::Cache \"{}\";\n
-             Dir::Cache::srcpkgcache \"srcpkgcache.bin\";\n
-             Dir::Cache::pkgcache \"pkgcache.bin\";",
-            cache_dir.display(),
-            cache_dir.display()
-        );
-        cache_dir.push("apt.conf");
-        let mut config_file =
-            fs::File::create(&cache_dir).error_msg("Failed to create config file")?;
-        write!(config_file, "{}", apt_conf).error_msg("Failed to write to config file")?;
-
-        let output = TextWidget::new(id, 0, shared_config).with_icon("update")?;
-
-        Ok(Apt {
-            update_interval: block_config.interval,
-            format: block_config.format.with_default("{count:1}")?,
-            format_singular: block_config.format_singular.with_default("{count:1}")?,
-            format_up_to_date: block_config.format_up_to_date.with_default("{count:1}")?,
-            output,
-            warning_updates_regex: block_config
-                .warning_updates_regex
-                .as_deref()
-                .map(Regex::new)
-                .transpose()
-                .error_msg("invalid warning updates regex")?,
-            critical_updates_regex: block_config
-                .critical_updates_regex
-                .as_deref()
-                .map(Regex::new)
-                .transpose()
-                .error_msg("invalid critical updates regex")?,
-            config_path: cache_dir.into_os_string().into_string().unwrap(),
-        })
-    }
-}
-
-fn has_warning_update(updates: &str, regex: &Regex) -> bool {
-    updates.lines().filter(|line| regex.is_match(line)).count() > 0
-}
-
-fn has_critical_update(updates: &str, regex: &Regex) -> bool {
-    updates.lines().filter(|line| regex.is_match(line)).count() > 0
-}
-
-fn get_updates_list(config_path: &str) -> Result<String> {
-    // Update database
-    Command::new("sh")
-        .env("APT_CONFIG", config_path)
-        .args(&["-c", "apt update"])
-        .output()
-        .error_msg("Failed to run `apt update` command")?;
-
-    String::from_utf8(
-        Command::new("sh")
-            .env("APT_CONFIG", config_path)
-            .args(&["-c", "apt list --upgradable"])
-            .output()
-            .error_msg("Problem running apt command")?
-            .stdout,
-    )
-    .error_msg("Problem capturing apt command output")
-}
-
-fn get_update_count(updates: &str) -> usize {
-    updates
-        .lines()
-        .filter(|line| line.contains("[upgradable"))
-        .count()
-}
-
-impl Block for Apt {
-    fn name(&self) -> &'static str {
-        "apt"
+    let mut cache_dir = env::temp_dir();
+    cache_dir.push("i3rs-apt");
+    if !cache_dir.exists() {
+        create_dir_all(&cache_dir)
+            .await
+            .error("Failed to create temp dir")?;
     }
 
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![&self.output]
-    }
+    let apt_config = format!(
+        "Dir::State \"{}\";\n
+         Dir::State::lists \"lists\";\n
+         Dir::Cache \"{}\";\n
+         Dir::Cache::srcpkgcache \"srcpkgcache.bin\";\n
+         Dir::Cache::pkgcache \"pkgcache.bin\";",
+        cache_dir.display(),
+        cache_dir.display(),
+    );
 
-    fn update(&mut self) -> Result<Option<Update>> {
-        let (formatting_map, warning, critical, cum_count) = {
-            let updates_list = get_updates_list(&self.config_path)?;
-            let count = get_update_count(&updates_list);
-            let formatting_map = map!(
-                "count" => Value::from_integer(count as i64)
-            );
+    let mut config_file = cache_dir;
+    config_file.push("apt.conf");
+    let config_file = config_file.to_str().unwrap();
 
-            let warning = self
-                .warning_updates_regex
-                .as_ref()
-                .map_or(false, |regex| has_warning_update(&updates_list, regex));
-            let critical = self
-                .critical_updates_regex
-                .as_ref()
-                .map_or(false, |regex| has_critical_update(&updates_list, regex));
+    let mut file = File::create(&config_file)
+        .await
+        .error("Failed to create config file")?;
+    file.write_all(apt_config.as_bytes())
+        .await
+        .error("Failed to write to config file")?;
 
-            (formatting_map, warning, critical, count)
-        };
-        self.output.set_texts(match cum_count {
-            0 => self.format_up_to_date.render(&formatting_map)?,
-            1 => self.format_singular.render(&formatting_map)?,
-            _ => self.format.render(&formatting_map)?,
+    loop {
+        let mut widget = Widget::new();
+        let updates = get_updates_list(config_file).await?;
+        let count = get_update_count(config_file, config.ignore_phased_updates, &updates).await?;
+
+        widget.set_format(match count {
+            0 => format_up_to_date.clone(),
+            1 => format_singular.clone(),
+            _ => format.clone(),
         });
-        self.output.set_state(match cum_count {
+        widget.set_values(map!(
+            "count" => Value::number(count),
+            "icon" => Value::icon(api.get_icon("update")?)
+        ));
+
+        let warning = warning_updates_regex
+            .as_ref()
+            .map_or(false, |regex| has_matching_update(&updates, regex));
+        let critical = critical_updates_regex
+            .as_ref()
+            .map_or(false, |regex| has_matching_update(&updates, regex));
+        widget.state = match count {
             0 => State::Idle,
             _ => {
                 if critical {
@@ -201,14 +153,78 @@ impl Block for Apt {
                     State::Info
                 }
             }
-        });
-        Ok(Some(self.update_interval.into()))
+        };
+
+        api.set_widget(widget).await?;
+
+        select! {
+            _ = sleep(config.interval.0) => (),
+            _ = api.wait_for_update_request() => (),
+        }
+    }
+}
+
+async fn get_updates_list(config_path: &str) -> Result<String> {
+    Command::new("apt")
+        .env("APT_CONFIG", config_path)
+        .args(["update"])
+        .stdout(Stdio::null())
+        .stdin(Stdio::null())
+        .spawn()
+        .error("Failed to run `apt update`")?
+        .wait()
+        .await
+        .error("Failed to run `apt update`")?;
+    let stdout = Command::new("apt")
+        .env("LANG", "C")
+        .env("APT_CONFIG", config_path)
+        .args(["list", "--upgradable"])
+        .output()
+        .await
+        .error("Problem running apt command")?
+        .stdout;
+    String::from_utf8(stdout).error("apt produced non-UTF8 output")
+}
+
+async fn get_update_count(
+    config_path: &str,
+    ignore_phased_updates: bool,
+    updates: &str,
+) -> Result<usize> {
+    let mut cnt = 0;
+
+    for update_line in updates.lines().filter(|line| line.contains("[upgradable")) {
+        if !ignore_phased_updates || !is_phased_update(config_path, update_line).await? {
+            cnt += 1;
+        }
     }
 
-    fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        if event.button == MouseButton::Left {
-            self.update()?;
-        }
-        Ok(())
-    }
+    Ok(cnt)
+}
+
+fn has_matching_update(updates: &str, regex: &Regex) -> bool {
+    updates.lines().any(|line| regex.is_match(line))
+}
+
+async fn is_phased_update(config_path: &str, package_line: &str) -> Result<bool> {
+    let package_name_regex = regex!(r#"(.*)/.*"#);
+    let package_name = &package_name_regex
+        .captures(package_line)
+        .error("Couldn't find package name")?[1];
+
+    let output = String::from_utf8(
+        Command::new("apt-cache")
+            .args(["-c", config_path, "policy", package_name])
+            .output()
+            .await
+            .error("Problem running apt-cache command")?
+            .stdout,
+    )
+    .error("Problem capturing apt-cache command output")?;
+
+    let phased_regex = regex!(r#".*\(phased (\d+)%\).*"#);
+    Ok(match phased_regex.captures(&output) {
+        Some(matches) => &matches[1] != "100",
+        None => false,
+    })
 }

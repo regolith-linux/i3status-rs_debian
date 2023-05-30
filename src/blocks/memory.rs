@@ -1,405 +1,296 @@
-use regex::Regex;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+//! Memory and swap usage
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `format` | A string to customise the output of this block when in "Memory" view. See below for available placeholders. | `" $icon $mem_avail.eng(prefix:M)/$mem_total.eng(prefix:M)($mem_total_used_percents.eng(w:2)) "`
+//! `format_alt` | If set, block will switch between `format` and `format_alt` on every click | `None`
+//! `interval` | Update interval in seconds | `5`
+//! `warning_mem` | Percentage of memory usage, where state is set to warning | `80.0`
+//! `warning_swap` | Percentage of swap usage, where state is set to warning | `80.0`
+//! `critical_mem` | Percentage of memory usage, where state is set to critical | `95.0`
+//! `critical_swap` | Percentage of swap usage, where state is set to critical | `95.0`
+//!
+//! Placeholder               | Value                                                                           | Type   | Unit
+//! --------------------------|---------------------------------------------------------------------------------|--------|-------
+//! `icon`                    | Memory icon                                                                     | Icon   | -
+//! `icon_swap`               | Swap icon                                                                       | Icon   | -
+//! `mem_total`               | Total physical ram available                                                    | Number | Bytes
+//! `mem_free`                | Free memory not yet used by the kernel or userspace (in general you should use mem_avail) | Number | Bytes
+//! `mem_free_percents`       | as above but as a percentage of total memory                                    | Number | Percents
+//! `mem_avail`               | Kernel estimate of usable free memory which includes cached memory and buffers  | Number | Bytes
+//! `mem_avail_percents`      | as above but as a percentage of total memory                                    | Number | Percents
+//! `mem_total_used`          | mem_total - mem_free                                                            | Number | Bytes
+//! `mem_total_used_percents` | as above but as a percentage of total memory                                    | Number | Percents
+//! `mem_used`                | Memory used, excluding cached memory and buffers; same as htop's green bar      | Number | Bytes
+//! `mem_used_percents`       | as above but as a percentage of total memory                                    | Number | Percents
+//! `buffers`                 | Buffers, similar to htop's blue bar                                             | Number | Bytes
+//! `buffers_percent`         | as above but as a percentage of total memory                                    | Number | Percents
+//! `cached`                  | Cached memory (taking into account ZFS ARC cache), similar to htop's yellow bar | Number | Bytes
+//! `cached_percent`          | as above but as a percentage of total memory                                    | Number | Percents
+//! `swap_total`              | Swap total                                                                      | Number | Bytes
+//! `swap_free`               | Swap free                                                                       | Number | Bytes
+//! `swap_free_percents`      | as above but as a percentage of total memory                                    | Number | Percents
+//! `swap_used`               | Swap used                                                                       | Number | Bytes
+//! `swap_used_percents`      | as above but as a percentage of total memory                                    | Number | Percents
+//!
+//! Action          | Description                               | Default button
+//! ----------------|-------------------------------------------|---------------
+//! `toggle_format` | Toggles between `format` and `format_alt` | Left
+//!
+//! # Example
+//!
+//! ```toml
+//! [[block]]
+//! block = "memory"
+//! format = " $icon $mem_used_percents.eng(w:1) "
+//! format_alt = " $icon_swap $swap_free.eng(w:3,u:B,p:M)/$swap_total.eng(w:3,u:B,p:M)($swap_used_percents.eng(w:2)) "
+//! interval = 30
+//! warning_mem = 70
+//! critical_mem = 90
+//! ```
+//!
+//! # Icons Used
+//! - `memory_mem`
+//! - `memory_swap`
+
+use std::cmp::min;
 use std::str::FromStr;
-use std::time::{Duration, Instant};
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crossbeam_channel::Sender;
-use serde_derive::Deserialize;
+use super::prelude::*;
+use crate::util::read_file;
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::de::deserialize_duration;
-use crate::errors::*;
-use crate::formatting::value::Value;
-use crate::formatting::FormatTemplate;
-use crate::protocol::i3bar_event::{I3BarEvent, MouseButton};
-use crate::scheduler::Task;
-use crate::widgets::text::TextWidget;
-use crate::widgets::{I3BarWidget, State};
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
-pub enum Memtype {
-    Swap,
-    Memory,
-}
-
-#[derive(Clone, Copy, Debug)]
-// Not following naming convention, because of naming in /proc/meminfo
-struct Memstate {
-    mem_total: (u64, bool),
-    mem_free: (u64, bool),
-    buffers: (u64, bool),
-    cached: (u64, bool),
-    s_reclaimable: (u64, bool),
-    shmem: (u64, bool),
-    swap_total: (u64, bool),
-    swap_free: (u64, bool),
-    zfs_arc_cache: u64,
-}
-
-impl Memstate {
-    fn mem_total(&self) -> u64 {
-        self.mem_total.0
-    }
-
-    fn mem_free(&self) -> u64 {
-        self.mem_free.0
-    }
-
-    fn buffers(&self) -> u64 {
-        self.buffers.0
-    }
-
-    fn cached(&self) -> u64 {
-        self.cached.0
-    }
-
-    fn s_reclaimable(&self) -> u64 {
-        self.s_reclaimable.0
-    }
-
-    fn shmem(&self) -> u64 {
-        self.shmem.0
-    }
-
-    fn swap_total(&self) -> u64 {
-        self.swap_total.0
-    }
-
-    fn swap_free(&self) -> u64 {
-        self.swap_free.0
-    }
-
-    fn zfs_arc_cache(&self) -> u64 {
-        self.zfs_arc_cache
-    }
-
-    fn new() -> Self {
-        Memstate {
-            mem_total: (0, false),
-            mem_free: (0, false),
-            buffers: (0, false),
-            cached: (0, false),
-            s_reclaimable: (0, false),
-            shmem: (0, false),
-            swap_total: (0, false),
-            swap_free: (0, false),
-            zfs_arc_cache: 0,
-        }
-    }
-
-    fn done(&self) -> bool {
-        self.mem_total.1
-            && self.mem_free.1
-            && self.buffers.1
-            && self.cached.1
-            && self.s_reclaimable.1
-            && self.shmem.1
-            && self.swap_total.1
-            && self.swap_free.1
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Memory {
-    id: usize,
-    memtype: Memtype,
-    output: (TextWidget, TextWidget),
-    clickable: bool,
-    format: (FormatTemplate, FormatTemplate),
-    update_interval: Duration,
-    tx_update_request: Sender<Task>,
-    warning: (f64, f64),
-    critical: (f64, f64),
-}
-
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, SmartDefault)]
 #[serde(deny_unknown_fields, default)]
-pub struct MemoryConfig {
-    /// Format string for Memory view. All format values are described below.
-    pub format_mem: FormatTemplate,
-
-    /// Format string for Swap view.
-    pub format_swap: FormatTemplate,
-
-    /// Default view displayed on startup. Options are <br/> memory, swap
-    pub display_type: Memtype,
-
-    /// Whether the format string should be prepended with Icons. Options are <br/> true, false
-    /// (Deprecated)
-    pub icons: bool,
-
-    /// Whether the view should switch between memory and swap on click. Options are <br/> true, false
-    pub clickable: bool,
-
-    /// The delay in seconds between an update. If `clickable`, an update is triggered on click. Integer values only.
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub interval: Duration,
-
-    /// Percentage of memory usage, where state is set to warning
+pub struct Config {
+    pub format: FormatConfig,
+    pub format_alt: Option<FormatConfig>,
+    #[default(5.into())]
+    pub interval: Seconds,
+    #[default(80.0)]
     pub warning_mem: f64,
-
-    /// Percentage of swap usage, where state is set to warning
+    #[default(80.0)]
     pub warning_swap: f64,
-
-    /// Percentage of memory usage, where state is set to critical
+    #[default(95.0)]
     pub critical_mem: f64,
-
-    /// Percentage of swap usage, where state is set to critical
+    #[default(95.0)]
     pub critical_swap: f64,
 }
 
-impl Default for MemoryConfig {
-    fn default() -> Self {
-        Self {
-            format_mem: FormatTemplate::default(),
-            format_swap: FormatTemplate::default(),
-            display_type: Memtype::Memory,
-            icons: true,
-            clickable: true,
-            interval: Duration::from_secs(5),
-            warning_mem: 80.,
-            warning_swap: 80.,
-            critical_mem: 95.,
-            critical_swap: 95.,
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    api.set_default_actions(&[(MouseButton::Left, None, "toggle_format")])
+        .await?;
+
+    let mut format = config.format.with_default(
+        " $icon $mem_avail.eng(prefix:M)/$mem_total.eng(prefix:M)($mem_total_used_percents.eng(w:2)) ",
+    )?;
+    let mut format_alt = match config.format_alt {
+        Some(f) => Some(f.with_default("")?),
+        None => None,
+    };
+
+    let mut timer = config.interval.timer();
+
+    loop {
+        let mem_state = Memstate::new().await?;
+
+        let mem_total = mem_state.mem_total as f64 * 1024.;
+        let mem_free = mem_state.mem_free as f64 * 1024.;
+
+        // TODO: possibly remove this as it is confusing to have `mem_total_used` and `mem_used`
+        // htop and such only display equivalent of `mem_used`
+        let mem_total_used = mem_total - mem_free;
+
+        // dev note: difference between avail and free:
+        // https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=34e431b0ae398fc54ea69ff85ec700722c9da773
+        // same logic as htop
+        let mem_avail = if mem_state.mem_available != 0 {
+            min(mem_state.mem_available, mem_state.mem_total)
+        } else {
+            mem_state.mem_free
+        } as f64
+            * 1024.;
+
+        // While zfs_arc_cache can be considered "available" memory,
+        // it can only free a maximum of (zfs_arc_cache - zfs_arc_min) amount.
+        // see https://github.com/htop-dev/htop/pull/1003
+        let zfs_shrinkable_size = mem_state
+            .zfs_arc_cache
+            .saturating_sub(mem_state.zfs_arc_min) as f64;
+        let mem_avail = mem_avail + zfs_shrinkable_size;
+
+        let pagecache = mem_state.pagecache as f64 * 1024.;
+        let reclaimable = mem_state.s_reclaimable as f64 * 1024.;
+        let shmem = mem_state.shmem as f64 * 1024.;
+
+        // See https://lore.kernel.org/lkml/1455827801-13082-1-git-send-email-hannes@cmpxchg.org/
+        let cached = pagecache + reclaimable - shmem + zfs_shrinkable_size;
+
+        let buffers = mem_state.buffers as f64 * 1024.;
+
+        // same logic as htop
+        let used_diff = mem_free + buffers + pagecache + reclaimable;
+        let mem_used = if mem_total >= used_diff {
+            mem_total - used_diff
+        } else {
+            mem_total - mem_free
+        };
+
+        // account for ZFS ARC cache
+        let mem_used = mem_used - zfs_shrinkable_size;
+
+        let swap_total = mem_state.swap_total as f64 * 1024.;
+        let swap_free = mem_state.swap_free as f64 * 1024.;
+        let swap_cached = mem_state.swap_cached as f64 * 1024.;
+        let swap_used = swap_total - swap_free - swap_cached;
+
+        let mut widget = Widget::new().with_format(format.clone());
+        widget.set_values(map! {
+            "icon" => Value::icon(api.get_icon("memory_mem")?),
+            "icon_swap" => Value::icon(api.get_icon("memory_swap")?),
+            "mem_total" => Value::bytes(mem_total),
+            "mem_free" => Value::bytes(mem_free),
+            "mem_free_percents" => Value::percents(mem_free / mem_total * 100.),
+            "mem_total_used" => Value::bytes(mem_total_used),
+            "mem_total_used_percents" => Value::percents(mem_total_used / mem_total * 100.),
+            "mem_used" => Value::bytes(mem_used),
+            "mem_used_percents" => Value::percents(mem_used / mem_total * 100.),
+            "mem_avail" => Value::bytes(mem_avail),
+            "mem_avail_percents" => Value::percents(mem_avail / mem_total * 100.),
+            "swap_total" => Value::bytes(swap_total),
+            "swap_free" => Value::bytes(swap_free),
+            "swap_free_percents" => Value::percents(swap_free / swap_total * 100.),
+            "swap_used" => Value::bytes(swap_used),
+            "swap_used_percents" => Value::percents(swap_used / swap_total * 100.),
+            "buffers" => Value::bytes(buffers),
+            "buffers_percent" => Value::percents(buffers / mem_total * 100.),
+            "cached" => Value::bytes(cached),
+            "cached_percent" => Value::percents(cached / mem_total * 100.)
+        });
+
+        let mem_state = match mem_used / mem_total * 100. {
+            x if x > config.critical_mem => State::Critical,
+            x if x > config.warning_mem => State::Warning,
+            _ => State::Idle,
+        };
+
+        let swap_state = match swap_used / swap_total * 100. {
+            x if x > config.critical_swap => State::Critical,
+            x if x > config.warning_swap => State::Warning,
+            _ => State::Idle,
+        };
+
+        widget.state = if mem_state == State::Critical || swap_state == State::Critical {
+            State::Critical
+        } else if mem_state == State::Warning || swap_state == State::Warning {
+            State::Warning
+        } else {
+            State::Idle
+        };
+
+        api.set_widget(widget).await?;
+
+        loop {
+            select! {
+                _ = timer.tick() => break,
+                event = api.event() => match event {
+                    UpdateRequest => break,
+                    Action(a) if a == "toggle_format" => {
+                        if let Some(ref mut format_alt) = format_alt {
+                            std::mem::swap(format_alt, &mut format);
+                            break;
+                        }
+                    }
+                    _ => (),
+                }
+            }
         }
     }
 }
 
-impl Memory {
-    fn format_insert_values(&mut self, mem_state: Memstate) -> Result<(String, Option<String>)> {
-        let mem_total = mem_state.mem_total() as f64 * 1024.;
-        let mem_free = mem_state.mem_free() as f64 * 1024.;
-        let swap_total = mem_state.swap_total() as f64 * 1024.;
-        let swap_free = mem_state.swap_free() as f64 * 1024.;
-        let swap_used = swap_total - swap_free;
-        let mem_total_used = mem_total - mem_free;
-        let buffers = mem_state.buffers() as f64 * 1024.;
-        let cached =
-            // Why do we include shared memory to "cached"?
-            (mem_state.cached() + mem_state.s_reclaimable() - mem_state.shmem()) as f64 * 1024.
-            + mem_state.zfs_arc_cache() as f64;
-        let mem_used = mem_total_used - (buffers + cached);
-        let mem_avail = mem_total - mem_used;
+#[derive(Clone, Copy, Debug, Default)]
+struct Memstate {
+    mem_total: u64,
+    mem_free: u64,
+    mem_available: u64,
+    buffers: u64,
+    pagecache: u64,
+    s_reclaimable: u64,
+    shmem: u64,
+    swap_total: u64,
+    swap_free: u64,
+    swap_cached: u64,
+    zfs_arc_cache: u64,
+    zfs_arc_min: u64,
+}
 
-        let values = map!(
-            "mem_total" => Value::from_float(mem_total).bytes(),
-            "mem_free" => Value::from_float(mem_free).bytes(),
-            "mem_free_percents" => Value::from_float(mem_free / mem_total * 100.).percents(),
-            "mem_total_used" => Value::from_float(mem_total_used).bytes(),
-            "mem_total_used_percents" => Value::from_float(mem_total_used / mem_total * 100.).percents(),
-            "mem_used" => Value::from_float(mem_used).bytes(),
-            "mem_used_percents" => Value::from_float(mem_used / mem_total * 100.).percents(),
-            "mem_avail" => Value::from_float(mem_avail).bytes(),
-            "mem_avail_percents" => Value::from_float(mem_avail / mem_total * 100.).percents(),
-            "swap_total" => Value::from_float(swap_total).bytes(),
-            "swap_free" => Value::from_float(swap_free).bytes(),
-            "swap_free_percents" => Value::from_float(swap_free / swap_total * 100.).percents(),
-            "swap_used" => Value::from_float(swap_used).bytes(),
-            "swap_used_percents" => Value::from_float(swap_used / swap_total * 100.).percents(),
-            "buffers" => Value::from_float(buffers).bytes(),
-            "buffers_percent" => Value::from_float(buffers / mem_total * 100.).percents(),
-            "cached" => Value::from_float(cached).bytes(),
-            "cached_percent" => Value::from_float(cached / mem_total * 100.).percents(),
+impl Memstate {
+    async fn new() -> Result<Self> {
+        // Reference: https://www.kernel.org/doc/Documentation/filesystems/proc.txt
+
+        let mut file = BufReader::new(
+            File::open("/proc/meminfo")
+                .await
+                .error("/proc/meminfo does not exist")?,
         );
 
-        match self.memtype {
-            Memtype::Memory => self.output.0.set_state(match mem_used / mem_total * 100. {
-                x if x > self.critical.0 => State::Critical,
-                x if x > self.warning.0 => State::Warning,
-                _ => State::Idle,
-            }),
-            Memtype::Swap => self
-                .output
-                .1
-                .set_state(match swap_used / swap_total * 100. {
-                    x if x > self.critical.1 => State::Critical,
-                    x if x > self.warning.1 => State::Warning,
-                    _ => State::Idle,
-                }),
-        };
+        let mut mem_state = Memstate::default();
+        let mut line = String::new();
 
-        Ok(match self.memtype {
-            Memtype::Memory => self.format.0.render(&values)?,
-            Memtype::Swap => self.format.1.render(&values)?,
-        })
-    }
+        while file
+            .read_line(&mut line)
+            .await
+            .error("failed to read /proc/meminfo")?
+            != 0
+        {
+            let mut words = line.split_whitespace();
 
-    pub fn switch(&mut self) {
-        self.memtype = match self.memtype {
-            Memtype::Memory => Memtype::Swap,
-            _ => Memtype::Memory,
-        };
-    }
-}
-
-impl ConfigBlock for Memory {
-    type Config = MemoryConfig;
-
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        tx: Sender<Task>,
-    ) -> Result<Self> {
-        let widget = TextWidget::new(id, 0, shared_config);
-        Ok(Memory {
-            id,
-            memtype: block_config.display_type,
-            output: if block_config.icons {
-                (
-                    widget.clone().with_icon("memory_mem")?,
-                    widget.with_icon("memory_swap")?,
-                )
-            } else {
-                (widget.clone(), widget)
-            },
-            clickable: block_config.clickable,
-            format: (
-                block_config
-                    .format_mem
-                    .with_default("{mem_free;M}/{mem_total;M}({mem_total_used_percents})")?,
-                block_config
-                    .format_swap
-                    .with_default("{swap_free;M}/{swap_total;M}({swap_used_percents})")?,
-            ),
-            update_interval: block_config.interval,
-            tx_update_request: tx,
-            warning: (block_config.warning_mem, block_config.warning_swap),
-            critical: (block_config.critical_mem, block_config.critical_swap),
-        })
-    }
-}
-
-impl Block for Memory {
-    fn name(&self) -> &'static str {
-        "memory"
-    }
-
-    fn update(&mut self) -> Result<Option<Update>> {
-        let f = File::open("/proc/meminfo").error_msg("/proc/meminfo does not exist")?;
-        let f = BufReader::new(f);
-
-        let mut mem_state = Memstate::new();
-
-        for line in f.lines() {
-            // stop reading if all values are already present
-            if mem_state.done() {
-                break;
-            }
-
-            let line = match line {
-                Ok(s) => s,
-                _ => continue,
+            let name = match words.next() {
+                Some(name) => name,
+                None => {
+                    line.clear();
+                    continue;
+                }
             };
-            let line = line.split_whitespace().collect::<Vec<&str>>();
+            let val = words
+                .next()
+                .and_then(|x| u64::from_str(x).ok())
+                .error("failed to parse /proc/meminfo")?;
 
-            match line.first() {
-                Some(&"MemTotal:") => {
-                    mem_state.mem_total = (
-                        u64::from_str(line[1]).error_msg("failed to parse mem_total")?,
-                        true,
-                    );
-                    continue;
-                }
-                Some(&"MemFree:") => {
-                    mem_state.mem_free = (
-                        u64::from_str(line[1]).error_msg("failed to parse mem_free")?,
-                        true,
-                    );
-                    continue;
-                }
-                Some(&"Buffers:") => {
-                    mem_state.buffers = (
-                        u64::from_str(line[1]).error_msg("failed to parse buffers")?,
-                        true,
-                    );
-                    continue;
-                }
-                Some(&"Cached:") => {
-                    mem_state.cached = (
-                        u64::from_str(line[1]).error_msg("failed to parse cached")?,
-                        true,
-                    );
-                    continue;
-                }
-                Some(&"SReclaimable:") => {
-                    mem_state.s_reclaimable = (
-                        u64::from_str(line[1]).error_msg("failed to parse s_reclaimable")?,
-                        true,
-                    );
-                    continue;
-                }
-                Some(&"Shmem:") => {
-                    mem_state.shmem = (
-                        u64::from_str(line[1]).error_msg("failed to parse shmem")?,
-                        true,
-                    );
-                    continue;
-                }
-                Some(&"SwapTotal:") => {
-                    mem_state.swap_total = (
-                        u64::from_str(line[1]).error_msg("failed to parse swap_total")?,
-                        true,
-                    );
-                    continue;
-                }
-                Some(&"SwapFree:") => {
-                    mem_state.swap_free = (
-                        u64::from_str(line[1]).error_msg("failed to parse swap_free")?,
-                        true,
-                    );
-                    continue;
-                }
-                _ => {
-                    continue;
-                }
+            match name {
+                "MemTotal:" => mem_state.mem_total = val,
+                "MemFree:" => mem_state.mem_free = val,
+                "MemAvailable:" => mem_state.mem_available = val,
+                "Buffers:" => mem_state.buffers = val,
+                "Cached:" => mem_state.pagecache = val,
+                "SReclaimable:" => mem_state.s_reclaimable = val,
+                "Shmem:" => mem_state.shmem = val,
+                "SwapTotal:" => mem_state.swap_total = val,
+                "SwapFree:" => mem_state.swap_free = val,
+                "SwapCached:" => mem_state.swap_cached = val,
+                _ => (),
             }
+
+            line.clear();
         }
 
-        // Read ZFS arc cache size to add to total cache size
-        let zfs_arcstats_file = std::fs::read_to_string("/proc/spl/kstat/zfs/arcstats");
-        if let Ok(arcstats) = zfs_arcstats_file {
-            let size_re = Regex::new(r"size\s+\d+\s+(\d+)").unwrap(); // Valid regex is safe to unwrap.
+        // For ZFS
+        if let Ok(arcstats) = read_file("/proc/spl/kstat/zfs/arcstats").await {
+            let size_re = regex!(r"size\s+\d+\s+(\d+)");
             let size = &size_re
                 .captures(&arcstats)
-                .error_msg("failed to find zfs_arc_cache size")?[1];
-            mem_state.zfs_arc_cache =
-                u64::from_str(size).error_msg("failed to parse zfs_arc_cache size")?;
+                .error("failed to find zfs_arc_cache size")?[1];
+            mem_state.zfs_arc_cache = size.parse().error("failed to parse zfs_arc_cache size")?;
+            let c_min_re = regex!(r"c_min\s+\d+\s+(\d+)");
+            let c_min = &c_min_re
+                .captures(&arcstats)
+                .error("failed to find zfs_arc_min size")?[1];
+            mem_state.zfs_arc_min = c_min.parse().error("failed to parse zfs_arc_min size")?;
         }
 
-        // Now, create the string to be shown
-        let output_text = self.format_insert_values(mem_state)?;
-
-        match self.memtype {
-            Memtype::Memory => self.output.0.set_texts(output_text),
-            Memtype::Swap => self.output.1.set_texts(output_text),
-        }
-
-        Ok(Some(self.update_interval.into()))
-    }
-
-    fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        if event.button == MouseButton::Left && self.clickable {
-            self.switch();
-            self.update()?;
-            self.tx_update_request
-                .send(Task {
-                    id: self.id,
-                    update_time: Instant::now(),
-                })
-                .error_msg("send error")?;
-        }
-
-        Ok(())
-    }
-
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![match self.memtype {
-            Memtype::Memory => &self.output.0,
-            Memtype::Swap => &self.output.1,
-        }]
+        Ok(mem_state)
     }
 }

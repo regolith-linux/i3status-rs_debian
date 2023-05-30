@@ -1,143 +1,114 @@
-use std::time::Duration;
+//! Count of notmuch messages
+//!
+//! This block queries a notmuch database and displays the count of messages.
+//!
+//! The simplest configuration will return the total count of messages in the notmuch database stored at $HOME/.mail
+//!
+//! Note that you need to enable `notmuch` feature to use this block:
+//! ```sh
+//! cargo build --release --features notmuch
+//! ```
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `format` | A string to customise the output of this block. See below for available placeholders. | `" $icon $count "`
+//! `maildir` | Path to the directory containing the notmuch database. Supports path expansions e.g. `~`. | `~/.mail`
+//! `query` | Query to run on the database. | `""`
+//! `threshold_critical` | Mail count that triggers `critical` state. | `99999`
+//! `threshold_warning` | Mail count that triggers `warning` state. | `99999`
+//! `threshold_good` | Mail count that triggers `good` state. | `99999`
+//! `threshold_info` | Mail count that triggers `info` state. | `99999`
+//! `interval` | Update interval in seconds. | `10`
+//!
+//! Placeholder | Value                                      | Type   | Unit
+//! ------------|--------------------------------------------|--------|-----
+//! `icon`      | A static icon                              | Icon   | -
+//! `count`     | Number of messages for the query           | Number | -
+//!
+//! # Example
+//!
+//! ```toml
+//! [[block]]
+//! block = "notmuch"
+//! query = "tag:alert and not tag:trash"
+//! threshold_warning = 1
+//! threshold_critical = 10
+//! [[block.click]]
+//! button = "left"
+//! update = true
+//! ```
+//!
+//! # Icons Used
+//! - `mail`
 
-use crossbeam_channel::Sender;
-use serde_derive::Deserialize;
+use super::prelude::*;
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::de::deserialize_duration;
-use crate::errors::*;
-use crate::protocol::i3bar_event::{I3BarEvent, MouseButton};
-use crate::scheduler::Task;
-use crate::util::expand_string;
-use crate::widgets::text::TextWidget;
-use crate::widgets::{I3BarWidget, State};
-
-pub struct Notmuch {
-    text: TextWidget,
-    update_interval: Duration,
-    query: String,
-    db: String,
-    threshold_info: u32,
-    threshold_good: u32,
-    threshold_warning: u32,
-    threshold_critical: u32,
-    name: Option<String>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, SmartDefault)]
 #[serde(deny_unknown_fields, default)]
-pub struct NotmuchConfig {
-    /// Update interval in seconds
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub interval: Duration,
-    pub maildir: String,
+pub struct Config {
+    pub format: FormatConfig,
+    #[default(10.into())]
+    pub interval: Seconds,
+    #[default("~/.mail".into())]
+    pub maildir: ShellString,
     pub query: String,
+    #[default(u32::MAX)]
     pub threshold_warning: u32,
+    #[default(u32::MAX)]
     pub threshold_critical: u32,
+    #[default(u32::MAX)]
     pub threshold_info: u32,
+    #[default(u32::MAX)]
     pub threshold_good: u32,
-    pub name: Option<String>,
-    // DEPRECATED
-    pub no_icon: bool,
 }
 
-impl Default for NotmuchConfig {
-    fn default() -> Self {
-        let maildir = "~/.mail".to_string();
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    let format = config.format.with_default(" $icon $count ")?;
 
-        Self {
-            interval: Duration::from_secs(10),
-            maildir,
-            query: "".to_string(),
-            threshold_warning: std::u32::MAX,
-            threshold_critical: std::u32::MAX,
-            threshold_info: std::u32::MAX,
-            threshold_good: std::u32::MAX,
-            name: None,
-            no_icon: false,
+    let db = config.maildir.expand()?;
+    let mut timer = config.interval.timer();
+
+    loop {
+        // TODO: spawn_blocking?
+        let count = run_query(&db, &config.query).error("Failed to get count")?;
+
+        let mut widget = Widget::new().with_format(format.clone());
+
+        widget.set_values(map! {
+            "icon" => Value::icon(api.get_icon("mail")?),
+            "count" => Value::number(count)
+        });
+
+        widget.state = if count >= config.threshold_critical {
+            State::Critical
+        } else if count >= config.threshold_warning {
+            State::Warning
+        } else if count >= config.threshold_good {
+            State::Good
+        } else if count >= config.threshold_info {
+            State::Info
+        } else {
+            State::Idle
+        };
+
+        api.set_widget(widget).await?;
+
+        tokio::select! {
+            _ = timer.tick() => (),
+            _ = api.wait_for_update_request() => (),
         }
     }
 }
 
 fn run_query(db_path: &str, query_string: &str) -> std::result::Result<u32, notmuch::Error> {
-    let db = notmuch::Database::open(&db_path, notmuch::DatabaseMode::ReadOnly)?;
+    let db = notmuch::Database::open_with_config(
+        Some(db_path),
+        notmuch::DatabaseMode::ReadOnly,
+        None::<&str>,
+        None,
+    )?;
     let query = db.create_query(query_string)?;
     query.count_messages()
-}
-
-impl ConfigBlock for Notmuch {
-    type Config = NotmuchConfig;
-
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        _tx_update_request: Sender<Task>,
-    ) -> Result<Self> {
-        let mut widget = TextWidget::new(id, 0, shared_config);
-        if !block_config.no_icon {
-            widget.set_icon("mail")?;
-        }
-        Ok(Notmuch {
-            update_interval: block_config.interval,
-            db: expand_string(&block_config.maildir)?,
-            query: block_config.query,
-            threshold_info: block_config.threshold_info,
-            threshold_good: block_config.threshold_good,
-            threshold_warning: block_config.threshold_warning,
-            threshold_critical: block_config.threshold_critical,
-            name: block_config.name,
-            text: widget,
-        })
-    }
-}
-
-impl Notmuch {
-    fn update_text(&mut self, count: u32) {
-        let text = match self.name {
-            Some(ref s) => format!("{}:{}", s, count),
-            _ => format!("{}", count),
-        };
-        self.text.set_text(text);
-    }
-
-    fn update_state(&mut self, count: u32) {
-        let mut state = State::Idle;
-        if count >= self.threshold_critical {
-            state = State::Critical;
-        } else if count >= self.threshold_warning {
-            state = State::Warning;
-        } else if count >= self.threshold_good {
-            state = State::Good;
-        } else if count >= self.threshold_info {
-            state = State::Info;
-        }
-        self.text.set_state(state);
-    }
-}
-
-impl Block for Notmuch {
-    fn name(&self) -> &'static str {
-        "notmuch"
-    }
-
-    fn update(&mut self) -> Result<Option<Update>> {
-        let count = run_query(&self.db, &self.query).error_msg("fialed to run query")?;
-        self.update_text(count);
-        self.update_state(count);
-        Ok(Some(self.update_interval.into()))
-    }
-
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![&self.text]
-    }
-
-    fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        if event.button == MouseButton::Left {
-            self.update()?;
-        }
-
-        Ok(())
-    }
 }

@@ -1,230 +1,195 @@
-use std::path::Path;
-use std::time::Duration;
+//! Disk usage statistics
+//!
+//! # Configuration
+//!
+//! Key | Values | Default
+//! ----|--------|--------
+//! `path` | Path to collect information from. Supports path expansions e.g. `~`. | `"/"`
+//! `interval` | Update time in seconds | `20`
+//! `format` | A string to customise the output of this block. See below for available placeholders. | `" $icon $available "`
+//! `format_alt` | If set, block will switch between `format` and `format_alt` on every click | `None`
+//! `warning` | A value which will trigger warning block state | `20.0`
+//! `alert` | A value which will trigger critical block state | `10.0`
+//! `info_type` | Determines which information will affect the block state. Possible values are `"available"`, `"free"` and `"used"` | `"available"`
+//! `alert_unit` | The unit of `alert` and `warning` options. If not set, percents are used. Possible values are `"B"`, `"KB"`, `"MB"`, `"GB"` and `"TB"` | `None`
+//!
+//! Placeholder  | Value                                                              | Type   | Unit
+//! -------------|--------------------------------------------------------------------|--------|-------
+//! `icon`       | A static icon                                                      | Icon   | -
+//! `path`       | The value of `path` option                                         | Text   | -
+//! `percentage` | Free or used percentage. Depends on `info_type`                    | Number | %
+//! `total`      | Total disk space                                                   | Number | Bytes
+//! `used`       | Used disk space                                                    | Number | Bytes
+//! `free`       | Free disk space                                                    | Number | Bytes
+//! `available`  | Available disk space (free disk space minus reserved system space) | Number | Bytes
+//!
+//! Action          | Description                               | Default button
+//! ----------------|-------------------------------------------|---------------
+//! `toggle_format` | Toggles between `format` and `format_alt` | Left
+//!
+//! # Example
+//!
+//! ```toml
+//! [[block]]
+//! block = "disk_space"
+//! info_type = "available"
+//! alert_unit = "GB"
+//! alert = 10.0
+//! warning = 15.0
+//! format = " $icon $available "
+//! format_alt = " $icon $available / $total "
+//! ```
+//!
+//! Update block on right click:
+//!
+//! ```toml
+//! [[block]]
+//! block = "disk_space"
+//! [[block.click]]
+//! button = "right"
+//! update = true
+//! ```
+//!
+//! # Icons Used
+//! - `disk_drive`
 
-use crossbeam_channel::Sender;
+// make_log_macro!(debug, "disk_space");
+
+use super::prelude::*;
+use crate::formatting::prefix::Prefix;
 use nix::sys::statvfs::statvfs;
-use serde_derive::Deserialize;
 
-use crate::blocks::{Block, ConfigBlock, Update};
-use crate::config::SharedConfig;
-use crate::de::deserialize_duration;
-use crate::errors::*;
-use crate::formatting::FormatTemplate;
-use crate::formatting::{prefix::Prefix, value::Value};
-use crate::scheduler::Task;
-use crate::util::expand_string;
-use crate::widgets::text::TextWidget;
-use crate::widgets::{I3BarWidget, State};
-
-#[derive(Copy, Clone, Debug, Deserialize)]
+#[derive(Copy, Clone, Debug, Deserialize, SmartDefault)]
 #[serde(rename_all = "lowercase")]
 pub enum InfoType {
+    #[default]
     Available,
     Free,
     Used,
 }
 
-pub struct DiskSpace {
-    disk_space: TextWidget,
-    update_interval: Duration,
-    path: String,
-    unit: Prefix,
-    info_type: InfoType,
-    warning: f64,
-    alert: f64,
-    alert_absolute: bool,
-    format: FormatTemplate,
-    icon: String,
-
-    // DEPRECATED
-    // TODO remove
-    alias: String,
-}
-
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, SmartDefault)]
 #[serde(deny_unknown_fields, default)]
-pub struct DiskSpaceConfig {
-    /// Path to collect information from
-    pub path: String,
-
-    /// Currently supported options are available, free, total and used
-    /// Sets value used for {percentage} calculation
-    /// total is the same as used, use format to set format string for output
+pub struct Config {
+    #[default("/".into())]
+    pub path: ShellString,
     pub info_type: InfoType,
-
-    /// Format string for output
-    pub format: FormatTemplate,
-
-    /// Unit that is used to display disk space. Options are B, KB, MB, GB and TB
-    pub unit: String,
-
-    /// Update interval in seconds
-    #[serde(deserialize_with = "deserialize_duration")]
-    pub interval: Duration,
-
-    /// Diskspace warning (yellow)
+    pub format: FormatConfig,
+    pub format_alt: Option<FormatConfig>,
+    pub alert_unit: Option<String>,
+    #[default(20.into())]
+    pub interval: Seconds,
+    #[default(20.0)]
     pub warning: f64,
-
-    /// Diskspace alert (red)
+    #[default(10.0)]
     pub alert: f64,
-
-    /// use absolute (unit) values for disk space alerts
-    pub alert_absolute: bool,
-
-    /// Alias that is displayed for path
-    // DEPRECATED
-    // TODO remove
-    pub alias: String,
 }
 
-impl Default for DiskSpaceConfig {
-    fn default() -> Self {
-        Self {
-            path: "/".to_string(),
-            info_type: InfoType::Available,
-            format: FormatTemplate::default(),
-            unit: "GB".to_string(),
-            interval: Duration::from_secs(20),
-            warning: 20.,
-            alert: 10.,
-            alert_absolute: false,
-            alias: "/".to_string(),
-        }
-    }
-}
+pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+    api.set_default_actions(&[(MouseButton::Left, None, "toggle_format")])
+        .await?;
 
-enum AlertType {
-    Above,
-    Below,
-}
+    let mut format = config.format.with_default(" $icon $available ")?;
+    let mut format_alt = match config.format_alt {
+        Some(f) => Some(f.with_default("")?),
+        None => None,
+    };
 
-impl DiskSpace {
-    fn compute_state(&self, value: f64, warning: f64, alert: f64, alert_type: AlertType) -> State {
-        match alert_type {
-            AlertType::Above => {
-                if value > alert {
-                    State::Critical
-                } else if value <= alert && value > warning {
-                    State::Warning
-                } else {
-                    State::Idle
-                }
-            }
-            AlertType::Below => {
-                if 0. <= value && value < alert {
-                    State::Critical
-                } else if alert <= value && value < warning {
-                    State::Warning
-                } else {
-                    State::Idle
-                }
-            }
-        }
-    }
-}
+    let unit = match config.alert_unit.as_deref() {
+        Some("TB") => Some(Prefix::Tera),
+        Some("GB") => Some(Prefix::Giga),
+        Some("MB") => Some(Prefix::Mega),
+        Some("KB") => Some(Prefix::Kilo),
+        Some("B") => Some(Prefix::One),
+        Some(x) => return Err(Error::new(format!("Unknown unit: '{x}'"))),
+        None => None,
+    };
 
-impl ConfigBlock for DiskSpace {
-    type Config = DiskSpaceConfig;
+    let path = config.path.expand()?;
 
-    fn new(
-        id: usize,
-        block_config: Self::Config,
-        shared_config: SharedConfig,
-        _tx_update_request: Sender<Task>,
-    ) -> Result<Self> {
-        let icon = shared_config.get_icon("disk_drive")?;
+    let mut timer = config.interval.timer();
 
-        Ok(DiskSpace {
-            update_interval: block_config.interval,
-            disk_space: TextWidget::new(id, 0, shared_config),
-            path: expand_string(&block_config.path)?,
-            format: block_config.format.with_default("{available}")?,
-            info_type: block_config.info_type,
-            unit: match block_config.unit.as_str() {
-                "TB" => Prefix::Tera,
-                "GB" => Prefix::Giga,
-                "MB" => Prefix::Mega,
-                "KB" => Prefix::Kilo,
-                "B" => Prefix::One,
-                x => return Err(Error::new(format!("unknown unit '{x}'"))),
-            },
-            warning: block_config.warning,
-            alert: block_config.alert,
-            alert_absolute: block_config.alert_absolute,
-            icon: icon.trim().to_string(),
-            alias: block_config.alias,
-        })
-    }
-}
+    loop {
+        let mut widget = Widget::new().with_format(format.clone());
 
-impl Block for DiskSpace {
-    fn name(&self) -> &'static str {
-        "disk_space"
-    }
+        let statvfs = statvfs(&*path).error("failed to retrieve statvfs")?;
 
-    fn update(&mut self) -> Result<Option<Update>> {
-        let statvfs =
-            statvfs(Path::new(self.path.as_str())).error_msg("failed to retrieve statvfs")?;
-
-        let total = (statvfs.blocks() as u64) * (statvfs.fragment_size() as u64);
-        let used = ((statvfs.blocks() as u64) - (statvfs.blocks_free() as u64))
-            * (statvfs.fragment_size() as u64);
-        let available = (statvfs.blocks_available() as u64) * (statvfs.block_size() as u64);
-        let free = (statvfs.blocks_free() as u64) * (statvfs.block_size() as u64);
-
-        let result;
-        let alert_type;
-        match self.info_type {
-            InfoType::Available => {
-                result = available as f64;
-                alert_type = AlertType::Below;
-            }
-            InfoType::Free => {
-                result = free as f64;
-                alert_type = AlertType::Below;
-            }
-            InfoType::Used => {
-                result = used as f64;
-                alert_type = AlertType::Above;
-            }
-        }
-
-        let percentage = result / (total as f64) * 100.;
-        let values = map!(
-            "percentage" => Value::from_float(percentage).percents(),
-            "path" => Value::from_string(self.path.clone()),
-            "total" => Value::from_float(total as f64).bytes(),
-            "used" => Value::from_float(used as f64).bytes(),
-            "available" => Value::from_float(available as f64).bytes(),
-            "free" => Value::from_float(free as f64).bytes(),
-            "icon" => Value::from_string(self.icon.to_string()),
-            //TODO remove
-            "alias" => Value::from_string(self.alias.clone()),
-        );
-        self.disk_space.set_texts(self.format.render(&values)?);
-
-        // Send percentage to alert check if we don't want absolute alerts
-        let alert_val = if self.alert_absolute {
-            result
-                / match self.unit {
-                    Prefix::Tera => 1u64 << 40,
-                    Prefix::Giga => 1u64 << 30,
-                    Prefix::Mega => 1u64 << 20,
-                    Prefix::Kilo => 1u64 << 10,
-                    Prefix::One => 1u64,
-                    _ => unreachable!(),
-                } as f64
-        } else {
-            percentage
+        // Casting to be compatible with 32-bit systems
+        #[allow(clippy::unnecessary_cast)]
+        let (total, used, available, free) = {
+            let total = (statvfs.blocks() as u64) * (statvfs.fragment_size() as u64);
+            let used = ((statvfs.blocks() as u64) - (statvfs.blocks_free() as u64))
+                * (statvfs.fragment_size() as u64);
+            let available = (statvfs.blocks_available() as u64) * (statvfs.block_size() as u64);
+            let free = (statvfs.blocks_free() as u64) * (statvfs.block_size() as u64);
+            (total, used, available, free)
         };
 
-        let state = self.compute_state(alert_val, self.warning, self.alert, alert_type);
-        self.disk_space.set_state(state);
+        let result = match config.info_type {
+            InfoType::Available => available,
+            InfoType::Free => free,
+            InfoType::Used => used,
+        } as f64;
 
-        Ok(Some(self.update_interval.into()))
-    }
+        let percentage = result / (total as f64) * 100.;
+        widget.set_values(map! {
+            "icon" => Value::icon(api.get_icon("disk_drive")?),
+            "path" => Value::text(path.to_string()),
+            "percentage" => Value::percents(percentage),
+            "total" => Value::bytes(total as f64),
+            "used" => Value::bytes(used as f64),
+            "available" => Value::bytes(available as f64),
+            "free" => Value::bytes(free as f64),
+        });
 
-    fn view(&self) -> Vec<&dyn I3BarWidget> {
-        vec![&self.disk_space]
+        // Send percentage to alert check if we don't want absolute alerts
+        let alert_val_in_config_units = match unit {
+            Some(Prefix::Tera) => result * 1e-12,
+            Some(Prefix::Giga) => result * 1e-9,
+            Some(Prefix::Mega) => result * 1e-6,
+            Some(Prefix::Kilo) => result * 1e-3,
+            Some(_) => result,
+            None => percentage,
+        };
+
+        // Compute state
+        widget.state = match config.info_type {
+            InfoType::Used => {
+                if alert_val_in_config_units >= config.alert {
+                    State::Critical
+                } else if alert_val_in_config_units >= config.warning {
+                    State::Warning
+                } else {
+                    State::Idle
+                }
+            }
+            InfoType::Free | InfoType::Available => {
+                if alert_val_in_config_units <= config.alert {
+                    State::Critical
+                } else if alert_val_in_config_units <= config.warning {
+                    State::Warning
+                } else {
+                    State::Idle
+                }
+            }
+        };
+
+        api.set_widget(widget).await?;
+
+        loop {
+            select! {
+                _ = timer.tick() => break,
+                event = api.event() => match event {
+                    UpdateRequest => break,
+                    Action(a) if a == "toggle_format" => {
+                        if let Some(ref mut format_alt) = format_alt {
+                            std::mem::swap(format_alt, &mut format);
+                            break;
+                        }
+                    }
+                    _ => (),
+                }
+            }
+        }
     }
 }

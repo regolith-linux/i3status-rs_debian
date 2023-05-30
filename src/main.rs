@@ -1,105 +1,51 @@
-#[macro_use]
-mod de;
-#[macro_use]
-mod util;
-#[macro_use]
-mod formatting;
-mod apcaccess;
-pub mod blocks;
-mod config;
-mod errors;
-mod http;
-mod icons;
-mod protocol;
-mod scheduler;
-mod signals;
-mod subprocess;
-mod themes;
-mod widgets;
+use clap::Parser;
 
-#[cfg(feature = "pulseaudio")]
-use libpulse_binding as pulse;
-
-use std::time::Duration;
-
-use clap::{crate_authors, crate_description, App, Arg, ArgMatches};
-use crossbeam_channel::{select, Receiver, Sender};
-
-use crate::config::{Config, SharedConfig};
-use crate::errors::*;
-use crate::protocol::i3bar_event::{process_events, I3BarEvent, MouseButton};
-use crate::scheduler::{Task, UpdateScheduler};
-use crate::signals::{process_signals, Signal};
-use crate::subprocess::spawn_child_async;
-use crate::util::deserialize_file;
-use crate::widgets::text::TextWidget;
-use crate::widgets::{I3BarWidget, State};
+use i3status_rs::config::Config;
+use i3status_rs::errors::*;
+use i3status_rs::escape::CollectEscaped;
+use i3status_rs::widget::{State, Widget};
+use i3status_rs::{protocol, util, BarState};
 
 fn main() {
-    let ver = if env!("GIT_COMMIT_HASH").is_empty() || env!("GIT_COMMIT_DATE").is_empty() {
-        env!("CARGO_PKG_VERSION").to_string()
-    } else {
-        format!(
-            "{} (commit {} {})",
-            env!("CARGO_PKG_VERSION"),
-            env!("GIT_COMMIT_HASH"),
-            env!("GIT_COMMIT_DATE")
-        )
-    };
+    env_logger::init();
 
-    let mut builder = App::new("i3status-rs");
-    builder = builder
-        .version(&*ver)
-        .author(crate_authors!())
-        .about(crate_description!())
-        .arg(
-            Arg::with_name("config")
-                .value_name("CONFIG_FILE")
-                .help("Sets a toml config file")
-                .required(false)
-                .index(1),
-        )
-        .arg(
-            Arg::with_name("exit-on-error")
-                .help("Exit rather than printing errors to i3bar and continuing")
-                .long("exit-on-error")
-                .takes_value(false),
-        )
-        .arg(
-            Arg::with_name("never-pause")
-                .help("Ignore any attempts by i3 to pause the bar when hidden/fullscreen")
-                .long("never-pause")
-                .takes_value(false),
-        )
-        .arg(
-            Arg::with_name("no-init")
-                .help("Do not send an init sequence")
-                .long("no-init")
-                .takes_value(false)
-                .hidden(true),
+    let args = i3status_rs::CliArgs::parse();
+    let blocking_threads = args.blocking_threads;
+
+    if !args.no_init {
+        protocol::init(args.never_pause);
+    }
+
+    let result = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(blocking_threads)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async move {
+            let config_path = util::find_file(&args.config, None, Some("toml"))
+                .or_error(|| format!("Configuration file '{}' not found", args.config))?;
+            let mut config: Config = util::deserialize_toml_file(&config_path)?;
+            let blocks = std::mem::take(&mut config.blocks);
+            let mut bar = BarState::new(config);
+            for block_config in blocks {
+                bar.spawn_block(block_config).await?;
+            }
+            bar.run_event_loop(restart).await
+        });
+    if let Err(error) = result {
+        let error_widget = Widget::new()
+            .with_text(error.to_string().chars().collect_pango_escaped())
+            .with_state(State::Critical);
+
+        println!(
+            "{},",
+            serde_json::to_string(&error_widget.get_data(&Default::default(), 0).unwrap()).unwrap()
         );
-
-    let matches = builder.get_matches();
-    let exit_on_error = matches.is_present("exit-on-error");
-
-    // Run and match for potential error
-    if let Err(error) = run(&matches) {
-        if exit_on_error {
-            eprintln!("{:?}", error);
-            ::std::process::exit(1);
-        }
-
-        // Create widget with error message
-        let error_widget = TextWidget::new(0, 0, Default::default())
-            .with_state(State::Critical)
-            .with_text(&format!("Error: {error}"));
-
-        // Print errors
-        println!("[{}],", error_widget.get_data().render());
-        eprintln!("\n\n{:?}", error);
+        eprintln!("\n\n{error}\n\n");
+        dbg!(error);
 
         // Wait for USR2 signal to restart
-        signal_hook::iterator::Signals::new(&[signal_hook::consts::SIGUSR2])
+        signal_hook::iterator::Signals::new([signal_hook::consts::SIGUSR2])
             .unwrap()
             .forever()
             .next()
@@ -108,135 +54,7 @@ fn main() {
     }
 }
 
-fn run(matches: &ArgMatches) -> Result<()> {
-    if !matches.is_present("no-init") {
-        // Now we can start to run the i3bar protocol
-        protocol::init(matches.is_present("never-pause"));
-    }
-
-    // Read & parse the config file
-    let config_path = match matches.value_of("config") {
-        Some(config_path) => std::path::PathBuf::from(config_path),
-        None => util::xdg_config_home().join("i3status-rust/config.toml"),
-    };
-    let config: Config = deserialize_file(&config_path)?;
-
-    // Update request channel
-    let (tx_update_requests, rx_update_requests): (Sender<Task>, Receiver<Task>) =
-        crossbeam_channel::unbounded();
-
-    let shared_config = SharedConfig::new(&config);
-
-    // Initialize the blocks
-    let mut blocks = Vec::new();
-    let mut block_event_handlers = Vec::new();
-    for (block_name, block_config) in config.blocks {
-        let block = block_name
-            .create_block(
-                blocks.len(),
-                block_config,
-                shared_config.clone(),
-                tx_update_requests.clone(),
-            )
-            .in_block(block_name.name())?;
-
-        if let Some((block, handlers)) = block {
-            blocks.push(block);
-            block_event_handlers.push(handlers);
-        }
-    }
-
-    let mut scheduler = UpdateScheduler::new(blocks.len());
-
-    // We wait for click events in a separate thread, to avoid blocking to wait for stdin
-    let (tx_clicks, rx_clicks): (Sender<I3BarEvent>, Receiver<I3BarEvent>) =
-        crossbeam_channel::unbounded();
-    process_events(tx_clicks);
-
-    // We wait for signals in a separate thread
-    let (tx_signals, rx_signals) = crossbeam_channel::unbounded();
-    process_signals(tx_signals);
-
-    // Time to next update channel.
-    // Fires immediately for first updates
-    let mut ttnu = crossbeam_channel::after(Duration::from_millis(0));
-
-    loop {
-        // We use the message passing concept of channel selection
-        // to avoid busy wait
-        select! {
-            // Receive click events
-            recv(rx_clicks) -> res => if let Ok(event) = res {
-                if let Some(id) = event.id {
-                    let block = blocks.get_mut(id).error_msg("could not get required block")?;
-                    let handlers = block_event_handlers.get_mut(id).error_msg("could not get required block")?;
-                    match &handlers.on_click {
-                        Some(on_click) if event.button == MouseButton::Left => {
-                            spawn_child_async("sh", &["-c", on_click]).error_msg("could not spawn child").in_block(block.name())?;
-                        }
-                        _ => {
-                            block.click(&event).in_block(block.name())?;
-                        }
-                    }
-                    protocol::print_blocks(&blocks, &shared_config)?;
-                }
-            },
-            // Receive async update requests
-            recv(rx_update_requests) -> request => if let Ok(req) = request {
-                if scheduler.schedule.iter().any(|x| x.id == req.id) {
-                    // If block is already scheduled then process immediately and forget
-                    let block = blocks.get_mut(req.id).error_msg("scheduler: could not get required block")?;
-                    block.update().in_block(block.name())?;
-                } else {
-                    // Otherwise add to scheduler tasks and trigger update
-                    // In case this needs to schedule further updates e.g. marquee
-                    scheduler.schedule.push(req);
-                    scheduler.do_scheduled_updates(&mut blocks)?;
-                }
-                protocol::print_blocks(&blocks, &shared_config)?;
-            },
-            // Receive update timer events
-            recv(ttnu) -> _ => {
-                scheduler.do_scheduled_updates(&mut blocks)?;
-                // redraw the blocks, state changed
-                protocol::print_blocks(&blocks, &shared_config)?;
-            },
-            // Receive signal events
-            recv(rx_signals) -> res => if let Ok(sig) = res {
-                match sig {
-                    Signal::SigUsr1 => {
-                        //USR1 signal that updates every block in the bar
-                        for block in blocks.iter_mut() {
-                            block.update().in_block(block.name())?;
-                        }
-                    },
-                    Signal::SigUsr2 => {
-                        //USR2 signal that should reload the config
-                        blocks.drain(..);
-                        restart();
-                    },
-                    Signal::Other(sig) => {
-                        //Real time signal that updates only the blocks listening
-                        //for that signal
-                        for (block, handlers) in blocks.iter_mut().zip(&block_event_handlers) {
-                            if handlers.signal == Some(sig) {
-                                block.update().in_block(block.name())?;
-                            }
-                        }
-                    },
-                };
-                protocol::print_blocks(&blocks, &shared_config)?;
-            }
-        }
-
-        // Set the time-to-next-update timer
-        if let Some(time) = scheduler.time_to_next_update() {
-            ttnu = crossbeam_channel::after(time)
-        }
-    }
-}
-
-/// Restart `i3status-rs` in-place
+/// Restart in-place
 fn restart() -> ! {
     use std::env;
     use std::ffi::CString;
@@ -246,9 +64,9 @@ fn restart() -> ! {
     let exe = CString::new(env::current_exe().unwrap().into_os_string().into_vec()).unwrap();
 
     // Get current arguments
-    let mut arg = env::args()
-        .map(|a| CString::new(a).unwrap())
-        .collect::<Vec<CString>>();
+    let mut arg: Vec<CString> = env::args_os()
+        .map(|a| CString::new(a.into_vec()).unwrap())
+        .collect();
 
     // Add "--no-init" argument if not already added
     let no_init_arg = CString::new("--no-init").unwrap();
