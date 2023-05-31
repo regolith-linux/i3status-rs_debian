@@ -9,6 +9,6 @@ Homepage: <https://github.com/greshake/i3status-rust>
 Package: i3status-rs
 Architecture: any
 Multi-Arch: foreign
-Depends: libpulse-0, libssl3, libsensors5, libdbus-1-3, ${misc:Depends}, ${shlibs:Depends} 
+Depends: libpulse0, libssl3, libsensors5, libdbus-1-3, ${misc:Depends}, ${shlibs:Depends} 
 Description: Very resourcefriendly and feature-rich 
  replacement for i3status, written in pure Rust 
