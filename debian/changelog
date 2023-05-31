@@ -1,3 +1,10 @@
+i3status-rs (0.22.0) jammy; urgency=medium
+
+  * feat: add default config
+  * match package version i3status-rs version
+
+ -- Soumya Ranjan patnaik <soumyaranjan1812@gmail.com>  Fri, 18 Nov 2022 21:46:01 +0530
+
 i3status-rs (0.1) jammy; urgency=medium
 
   * Initial release. 
