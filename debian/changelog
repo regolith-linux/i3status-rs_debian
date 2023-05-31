@@ -1,3 +1,1347 @@
+i3status-rs (0.31.5) lunar; urgency=medium
+
+  [ Jason Nader ]
+  * Bump ver for async release
+
+  [ Max Verevkin ]
+  * copy files
+  * CI: change link
+
+  [ Ole Martin Ruud ]
+  * Add srcery color theme
+
+  [ Max Verevkin ]
+  * subprocess: detach child; hueshift: add wl-gammarelay support
+  * hueshift: add wl_gammarelay_rs
+  * update README
+  * hueshift: merge wl-gammarelay with wl-gammarelay-rs
+  * time: update timezone repeatedly
+  * watson: watch MOVED_TO events
+  * watson: do not override show_time
+  * use neli-wifi instead of nl80211 fork
+  * remove unnecesary Rc<RefCell>
+  * zbus 2.1
+  * fmt
+  * make notmuch optional
+  * docs: generate docs for all features
+  * docs: mention that notmuch is optional
+  * use neli-wifi 0.3 with async
+  * NetDevice::read_stats: read files concurrently
+  * use dirs_next crate
+  * some refactoring
+  * neli: use async
+  * fix rofication docs
+
+  [ Tris Emmy Wilson ]
+  * Implement "persistent" command feature from i3blocks
+
+  [ Max Verevkin ]
+  * avoid Box::leak()
+  * cleanup
+  * make maild dir optional
+  * update deps
+  * music: implement clickable format plaseholders
+  * remove obsolete button API
+  * remove blocks.md
+  * use new format!() macro syntax
+  * Remove unnecessary Arc::make_mut()
+  * fix error handling
+  * maildir&notmuch: improve 'unknown block' message
+  * format Cargo.toml
+  * remove de module
+  * some refactoring
+  * initial nvidia_gpu port
+  * formatting: allow for per-placeholder state
+  * nvidia_gpu: implement highlighting
+  * nvidia_gpu: docs
+  * formatting: change default rot-str interval to 0.5
+  * music: full port
+  * music: fix defaults
+  * networkmanager: port a little more
+  * music: check if title/artist is empty
+  * icons: awesome5: update cpu icon
+  * append padding space to an already existing block
+  * music: do not trim button icons
+
+  [ Ole Martin Ruud ]
+  * Add image to doc/themes.md
+
+  [ Max Verevkin ]
+  * theme.overrides: set separator to "native" to use native separators
+  * resturcture BlockType::run()
+  * fix clippy lint
+  * docs: document bar formatter
+  * focused_window: add river support
+  * focused_window: update docs
+  * battery: port recent changes
+  * battery: add device_regex option
+  * battery: remove allow_missing
+  * add fn default() as a shortcut for Default::default()
+  * battery: always enable device_regex; fix race condition with sysfs driver
+  * split battery.rs
+  * fix some clippy lints
+  * signals: there is no need for a fused stream
+  * use env::args_os() becasue it will be converted to CString anyway
+  * update dependencies
+  * remove explicit serde_derive dependency
+  * implement generic signal support for all blocks
+  * add some code comments
+  * update all blocks on SIGURS1
+  * rework widget updates scheduling (rotating text)
+  * add clippy.toml
+  * use smart-default instead of derivative
+  * fix some clippy lints
+  * memory: small changes
+  * abort blocks on errors
+  * small changes
+  * remove smartstring
+  * update dependencies
+  * Internal: simplify block API
+  * small changes
+  * small changes
+  * fix CI
+  * fix clippy lints
+
+  [ Jason Nader ]
+  * Reorder deps
+  * Update README.md
+  * Update README.md
+  * Update example config with new async formatter
+  * Use less aggressive intervals for example config
+  * Restore NEWS.md
+  * Start documenting breaking changes for v0.30
+  * Document removed blocks
+
+  [ Max Verevkin ]
+  * fix automatic docs deneration
+
+  [ Jason Nader ]
+  * time block: remove invalid config option
+
+  [ Max Verevkin ]
+  * fix(formatting): allow placeholder name to contain numbers
+  * temperature: fix default format
+
+  [ Jason Nader ]
+  * Document kdeconnect version compatibility
+
+  [ Max Verevkin ]
+  * generate manpage from top-level comments in src/blocks/*.rs
+  * gen-manpage: fixes and simplifications
+
+  [ Jason Nader ]
+  * Update Cargo.toml
+
+  [ Max Verevkin ]
+  * click handler: actually update the block when update=true
+  * disk space: add example config
+  * custom: fix cycle
+  * click: add pass=<bool> config option
+  * net: detect misssing and inactive devices
+  * add loging
+
+  [ Jason Nader ]
+  * Update examples
+
+  [ Max Verevkin ]
+  * net: update a comment
+  * try to fix build on stable
+  * util: refactor map! macro
+
+  [ Jason Nader ]
+  * Make pulseaudio optional again
+  * fix typo
+
+  [ Max Verevkin ]
+  * sound: make pulseaudio optional again
+
+  [ Jason Nader ]
+  * Add breaking change (on_click)
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update config for v0.30
+  * Update example config for v0.30
+  * Remove non-essential blocks from example config
+  * Remove icons config from theme override example
+  * Update NEWS.md
+
+  [ Max Verevkin ]
+  * temperature: fix docs
+  * music: fix docs
+  * temperature: collapsed by default
+
+  [ Jason Nader ]
+  * Update NEWS.md
+  * Add links to new doc locations
+  * Update NEWS.md
+  * Fix docstring formatting
+  * Update hueshift docs
+  * Update NEWS.md
+  * docs: add custom_dbus breaking changes
+  * Update NEWS.md
+  * Update NEWS.md
+  * docs: regenerate manpages
+  * battery: add debug logs
+  * Add bat_xx icons
+  * Add missing pomodoro icons
+  * Remove old bat icons
+  * Remove unused bat icon
+  * Add remaining missing icons
+  * Add TODO
+  * Re-document awesome6 icons
+  * Re-document aweseom6 icons
+  * docs: fix formatting
+  * docs: remove Arch specific font links
+  * fix comments
+  * Bump deps
+  * Document focused_window breaking changes
+  * Update NEWS.md
+
+  [ Max Verevkin ]
+  * battery: improve debug messages
+
+  [ Jason Nader ]
+  * docs: fix typos
+  * fix typo
+  * fix typo
+  * Remove AUR link
+  * Update README.md
+
+  [ Max Verevkin ]
+  * docs: remove "required" column
+  * update NEWS.md
+  * pacman: update docs
+  * custom: recover from invalid json errors
+  * sound: simplify alsa monitoring
+
+  [ Jason Nader ]
+  * Update formatting.rs
+  * docs: fix typo
+  * Document block error mode
+  * Remove mention of networkmanager
+  * Clarify `pass` option behaviour
+
+  [ Max Verevkin ]
+  * battery: try to fix this block
+  * use shellexpand for more blocks
+  * update icons
+  * fix disk_space
+  * change some defaults
+  * port 'sound: check DEVICE_FORM_FACTOR property (#1438)'
+  * remove unnecessary HashMap imports
+  * focused_window: change default formatting to match v0.22
+  * fix maildir
+
+  [ Dennis ]
+  * Set widget in keyboard_layout block
+
+  [ Max Verevkin ]
+  * keyboard_layout: little refactor
+
+  [ Stuart Reilly ]
+  * Fix typo
+
+  [ Leo Shen ]
+  * music: add url field
+  * music: remove unnecessary type conversions
+
+  [ sashomasho ]
+  * Restore support for kbdd keyboard driver (#1538)
+
+  [ Max Verevkin ]
+  * battery: update docs
+  * reimplement if_command
+
+  [ Jason Nader ]
+  * Update NEWS.md
+
+  [ Max Verevkin ]
+  * custom_dbus: use zbus::fdo::Result
+  * battery: set format before values
+  * battery: even more debug info
+  * battery/sysfs: prefer batteries that begin with BAT or CMB
+  * battery: fix full_freshold & add more debug info
+
+  [ Jason Nader ]
+  * bluetooth: add debug logs
+
+  [ Max Verevkin ]
+  * reimplement "fix prefix choice for zero-valued floats"
+  * fix clippy lints
+  * formatting: better support for 'auto' prefix and unit
+  * formatting: fix double space
+  * implement per-block icons overrides
+  * net: rename signal -> signal_strength
+  * Re-implement player names option for music block
+  * menu: add docs
+  * subprocess: fix typo
+
+  [ Bryan Malyn ]
+  * Add apc_ups battery driver (#1548)
+
+  [ Max Verevkin ]
+  * battery: set format before values
+  * github: little refactoring
+  * remove unnecessary .map(Into::into)
+  * remove networkmanager.rs
+  * kdeconnect: allow missing battery stats
+  * kdeconnect: fix docs formatting
+  * backlight: fix typos
+  * kdeconnect: update docs
+  * backlight: fix invert_icons
+  * kdeconnect: connected(): default to `false`
+  * kdeconnect: make $name optional, change default format
+  * bluethooth: simplify battery logic, possibly fixing a bug
+  * bluetooth: some refactoring
+  * add Send+Sync as Formatter supertrait
+  * allow clippy::explicit_auto_deref due to a bug in clippy
+  * fix CI
+
+  [ Jason Nader ]
+  * Update pacman hook dir
+  * Update pacman.rs
+
+  [ Max Verevkin ]
+  * nvidia_gpu: fix convertation error
+  * nvidia_gpu: remove unnecessary format!()
+
+  [ Jason Nader ]
+  * Update links to docs
+  * Update README.md
+  * Update pacman.rs
+
+  [ Max Verevkin ]
+  * pacman: refactor + add some debug info
+
+  [ Jason Nader ]
+  * docs: fix on_click config
+  * docs: update reference to on_click
+  * docs: update reference to on_click
+  * docs: remove mention of on_click
+  * docs: update all examples using on_click
+  * docs: regenerate manpages
+  * docs: interval isn't a string
+  * docs: fix TOML
+  * Update README.md
+  * Update README.md
+  * Update README.md
+  * Update README.md
+  * Update README.md
+  * Update README.md
+  * simplify table by removing required column
+  * Fix table markdown
+  * Update README.md
+  * Update themes.md
+  * add TODO
+  * Update themes.md
+  * Update themes.md
+  * Update themes.md
+  * Update themes.md
+  * Update themes.md
+  * Update themes.md
+  * Update themes.md
+  * Update themes.md
+  * Update util.rs
+
+  [ Max Verevkin ]
+  * temperature: fix example
+  * disk_space: fix example
+  * readme: stop recommending official fedora package (it's outdated)
+
+  [ Jason Nader ]
+  * Add packaging status badge
+  * Update README.md
+  * Update README.md
+  * condense table
+  * Condense table further
+  * Document debug logs
+  * Update README.md
+  * docs: automatically generate screenshots
+  * Update themes.md
+  * Fix markdown
+  * add missing icons for `material`
+  * Fix typo
+  * Update README.md
+  * Add TODOs
+  * Use generated screenshot
+
+  [ Max Verevkin ]
+  * install: recommend using cargo install with --locked
+
+  [ Bryan Malyn ]
+  * Use tokio::try_join! over futures::try_join!
+
+  [ Jason Nader ]
+  * Simplify docs
+  * Simplify README
+  * Fix markdown
+  * Update README.md
+  * docs: reword
+  * Generalise wording
+
+  [ Jakub Kaczor ]
+  * Weather: Use API data for AT instead of calculating (#1573)
+
+  [ Max Verevkin ]
+  * pacman: don't use sh to run fakeroot
+  * weather: update docs
+  * examples: add wttr.in custom block
+  * examples: fix link
+  * github: handle api errors
+  * fix #1574
+
+  [ Jason Nader ]
+  * docs: add block-level config
+  * hack: adjust column width
+  * undo hack
+  * docs: add more block-level config options
+  * docs: add click config
+  * Update README.md
+  * Update README.md
+  * docs: try to make TOML syntax more obvious
+  * Update README.md
+  * sound: document `mappings`
+  * Update README.md
+  * Update README.md
+  * docs: add state and error info
+  * docs: consolidate example configs
+  * consolidate into config.toml
+  * consolidate into config.toml
+  * Add example of block level icon override
+  * Fix typo
+
+  [ Max Verevkin ]
+  * weather: update docs
+
+  [ Jason Nader ]
+  * Update README.md
+
+  [ Robin Ramael ]
+  * custom_dbus: allow override of interface name with env var
+
+  [ Max Verevkin ]
+  * refactor wifi stats into a struct
+  * reimplement 'net: use bss signal if info is incomplete'
+
+  [ Sigve Indregard ]
+  * weather: Add support for met.no (#1577)
+
+  [ Max Verevkin ]
+  * minor refactoring
+
+  [ Sven-Hendrik Haase ]
+  * Add better support for empty batteries (#1585)
+
+  [ Max Verevkin ]
+  * use functional style
+  * remove usless debug
+
+  [ Jason Nader ]
+  * fix typo
+  * add TODO
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update README.md
+
+  [ MaxVerevkin ]
+  * battery: implement hide_full
+
+  [ M ]
+  * Fix docs typo from 'width' to 'with' (#1589)
+
+  [ MaxVerevkin ]
+  * docs: fix typos
+  * fix clippy lint
+
+  [ Max Verevkin ]
+  * config: remove top-level icons and theme (#1586)
+
+  [ MaxVerevkin ]
+  * update dependencies
+  * disk_space: fix color indication
+  * disk_space: add debug info
+  * update neli-wifi & implement bitrate for net block
+  * pacman: update docs
+  * fix some docs
+
+  [ Jason Nader ]
+  * doc: Reorder options
+
+  [ MaxVerevkin ]
+  * improve map! macro
+
+  [ Jason Nader ]
+  * bump cargo.lock deps for swayipc-types 1.1.2
+
+  [ MaxVerevkin ]
+  * weather: fix error messages
+  * remove allow(clippy::explicit_auto_deref)
+  * net: for some reason SSID _can_ be none
+  * update iana-time-zone dependency
+  * rework blocks errors
+  * custom: properly report deserialization error
+  * customizable errors
+  * adjust docs
+  * weather: do not use city name with autolocate
+  * net: implement ip&ipv6
+  * net: fix default iface
+  * fix typo
+
+  [ Christopher Mahoney ]
+  * weather: add `autolocate_interval` option (#1600)
+
+  [ MaxVerevkin ]
+  * weather: handle ipapi.co errors
+
+  [ Max Verevkin ]
+  * net: support regex for `device` option (#1601)
+
+  [ MaxVerevkin ]
+  * net: do not throw an error if device.is_none() && !conig.hide_missing
+
+  [ Max Verevkin ]
+  * formatting: fix example configs which use `.str(<width>)` (#1602)
+  * docs: mention path expansion support (#1603)
+
+  [ MaxVerevkin ]
+  * reset fullscreen_block when block hides
+  * net: fix Interface::is_up
+
+  [ Jason Nader ]
+  * fix typo
+
+  [ Max Verevkin ]
+  * custom: fix hide_when_empty for json (#1613)
+
+  [ MaxVerevkin ]
+  * bluetooth: simplify internal logic
+
+  [ arathunku ]
+  * Drop hard-coded whitespace and render icon as a placeholder
+
+  [ MaxVerevkin ]
+  * battery: upower: remove dead code
+
+  [ arathunku ]
+  * Ensure weather.rs uses api.get_icon/1
+  * Add format option to hueshift
+  * Drop useless enumerator in widget.rs
+  * Add spaces around default error format
+
+  [ MaxVerevkin ]
+  * formatting: remove unnecessary std::mem::take & std::mem::replace
+
+  [ finga ]
+  * docs: Add `ip` and `ipv6` to the `net` block docs (#1619)
+
+  [ arathunku ]
+  * Handle optional short_error_message placeholder in default_error_format
+  * Revert format_alt config for temperature block
+  * Adjust short format for custom block
+  * Revert changes to available values in temperature block
+  * Single temperature format for both collapsed and expended modes
+
+  [ MaxVerevkin ]
+  * increase reqwest timeout
+
+  [ arathunku ]
+  * Add format with icon for custom_bus
+  * Remove hide_full from battery block and fix missing icon in default full/empty formats
+  * Drop hide_full and hide_missing in {batter, net} block and add format_missing
+  * Add FormatConfig with_defaults
+  * Drop redundant field names in struct initialization in pomodoro block
+
+  [ Max Verevkin ]
+  * formatting: add binary SI prefixes (#1604)
+
+  [ arathunku ]
+  * Fix music block missing icon value
+  * backlight: fix format docs
+  * {battery, net}: rename format_missing to missing_format
+  * bluetooth: relace hide_disconnected with disconnected_format
+  * net: drop hide_inactive, replaced by missing_format
+  * Apply suggestions from code review - mainly format fixes in various blocks
+  * focused_window: drop autohide option
+  * bluetooth: drop connected flag
+  * custom: adjust default short format
+  * formatting: drop Option<> from short field
+
+  [ MaxVerevkin ]
+  * clippy --fix
+
+  [ arathunku ]
+  * docs: fix missing blanks and icon placeholder
+  * docs: update NEWS.md with breaking changes and new format config option
+
+  [ Max Verevkin ]
+  * nvidia_gpu: do not highlight individual values (#1622)
+
+  [ arathunku ]
+  * {apt, dnf, pacman}: drop hide_when_uptodate, empty format_up_to_date replaces it
+
+  [ Max Verevkin ]
+  * formatting: embed icons using ^icon syntax (#1621)
+  * backlight: add a workaround for ddcci (#1625)
+
+  [ MaxVerevkin ]
+  * docs: document format-embeded icons
+  * double_click_delay: change the default + document
+
+  [ Jason Nader ]
+  * Update src/blocks/sound.rs
+
+  [ arathunku ]
+  * focused_window: update format example for focused_window
+  * toggle: add format option to the example
+  * Update examples/config.toml with new format icon placeholder
+  * uptime: fix missing icon
+  * add icon placeholder to documentation
+  * speedtext: fix docs for icon placeholder
+  * drop set_texts from widget
+  * watson: add format option with text placeholder
+  * Update icon placeholder docs for variable icons
+  * Apply suggestions from code review
+  * maildir: add docs for status placeholder
+  * speedtest: fix spacing in examples
+  * pomodoro: add docs for message placeholder
+  * memory: cleanup values and fix icon on click
+  * maildir: fix formatting and compilation error
+  * notmuch: add name and count placeholders, drop set_text
+  * Update src/blocks/speedtest.rs
+  * music: fix format docs default value
+  * notmuch: drop name option, format can be used instead
+  * focused_window: drop curly braces from format options
+  * time: refactor format config block
+  * {pomodoro, custom_dbus, music, bluetooth}: fix rendering of | in tables
+  * {pomodoro, custom_dbus}: ensure format doc default value is wrapped in code element
+  * time: apply clippy suggestion
+
+  [ Colson Xu ]
+  * Update NEWS.md (#1628)
+
+  [ arathunku ]
+  * Apply suggestions from code review
+  * notify: change styling of set values, inline condition in map
+  * music: fix spacing in format docs
+  * custom: value icon available only when it's non-empty, document all placeholders
+  * custom_dbus: value icon available only when it's non-empty, document all placeholders
+
+  [ Max Verevkin ]
+  * Update src/blocks/custom.rs
+
+  [ MaxVerevkin ]
+  * refactor: remove Widget::shared_state and unnecessary clones
+
+  [ Jason Nader ]
+  * Update NEWS.md
+  * Update README.md
+  * Update custom.rs
+
+  [ MaxVerevkin ]
+  * update docs
+  * net: always set_values() after set_format()
+  * net: assume {tun,wg,ppp} is always up
+
+  [ Jason Nader ]
+  * Update README.md
+  * Update README.md
+  * Update README.md
+  * Update README.md
+  * Update README.md
+  * Update README.md
+  * Add example of top-level global variable
+
+  [ Madhur Ahuja ]
+  * Add format_alt option for disk_space block (#1636)
+
+  [ MaxVerevkin ]
+  * disk_space: remove debug message
+  * refactor: `Widget` does not need to store `id`
+
+  [ Madhur Ahuja ]
+  * Add format_alt to temperature and remove collapsed (#1640)
+
+  [ Bryan Malyn ]
+  * Remove color space (#1643)
+
+  [ MaxVerevkin ]
+  * update color.rs
+  * fix clippy lints
+
+  [ Madhur Ahuja ]
+  * memory: rename format_mem and format_swap to fromat and format_alt (#1644)
+
+  [ MaxVerevkin ]
+  * memory: update docs
+  * fix example config
+
+  [ Oskar ]
+  * Add option to add custom ending separator (resolve #1650) (#1653)
+
+  [ Max Verevkin ]
+  * Allow "theme overrides" colors to link to other colors (#1646)
+
+  [ Jason Nader ]
+  * memory: use SwapCached in swap usage calculations
+  * memory: differentiate meminfo's Cache (== page cache size) vs our calculated cache
+  * typo
+  * memory: fix mem_used calculation (match htop)
+  * memory: add dev note about calculation for `cached`
+  * memory: re-add zfs arch cache logic to mem_used calc
+  * memory: fix typo
+  * update memory docs
+  * memory: change default format to mem_available
+  * memory: fix typo
+  * memory: update docs regarding mem_avail
+  * memory: add dev note
+  * Update memory.rs
+
+  [ MaxVerevkin ]
+  * memory: update docs
+
+  [ Jason Nader ]
+  * fix docs
+
+  [ MaxVerevkin ]
+  * notify: fix DunstDriver name
+  * notify: remove unnecessary Send+Sync
+  * fix blocks ids when they are in fullscreen mode
+  * formatting: do not apply engineering notation to degrees
+  * hueshift: initial work for temperature monitoring
+
+  [ Bryan Malyn ]
+  * Add support for SwayNotificationCenter driver (#1662)
+
+  [ Max Verevkin ]
+  * refactor: avoid toml::Value manipulation (#1652)
+
+  [ MaxVerevkin ]
+  * CI: fix fmt check and test with all features enabled
+
+  [ Bryan Malyn ]
+  * Fix change in maildir caused by #1652 (#1666)
+
+  [ MaxVerevkin ]
+  * fix clippy lints
+
+  [ Soumya Ranjan Patnaik ]
+  * Install i3status-rs files
+
+  [ MaxVerevkin ]
+  * apt: attach `apt update` stdout to /dev/null
+  * apt: run `apt` directly without `sh`
+  * example config: add a version note
+
+  [ wojciechmadry ]
+  * Install: Update dev.md (#1674)
+
+  [ MaxVerevkin ]
+  * dev.md: mention libpulse
+  * music: remove hide_when_empty
+  * readme: scrolling -> invert_scrolling
+  * news.md: mention scrolling -> invert_scrolling
+  * news.md: fix formatting
+
+  [ Jason Nader ]
+  * docs: override error_interval for AUR example config
+  * pacman block: clarify ownership of checkupdates dir
+  * fix lint
+  * Update README.md
+
+  [ Louise Zanier ]
+  * Add block for a tea timer (or any timer, really) (#1651)
+
+  [ pyrrhull ]
+  * corrected 'unit' to 'alert_unit' in block disk_space (#1679)
+
+  [ MaxVerevkin ]
+  * cargo clippy --fix
+
+  [ Ben Brown ]
+  * Fix typo in man page generation script
+  * Add `not_charging_format` config option (#1685)
+
+  [ Hassan Tariq ]
+  * battery docs: Fix block declaration (#1690)
+
+  [ MaxVerevkin ]
+  * sound: update docs #1692 (#1693)
+
+  [ Max Verevkin ]
+  * implement action-based click events (#1686)
+  * bluetooth: handle the case when .get_managed_objects() returns Err (#1691)
+
+  [ MaxVerevkin ]
+  * bluetooth: listen to NameOwnerChanged event
+  * fix deprecation warnings
+  * music: some refactoring
+  * bluetooth: update block state when toggled
+
+  [ Jason Nader ]
+  * docs: update checkupdates dir
+
+  [ Bryan Malyn ]
+  * Add notification_count
+  * Add `show` action to notify block
+
+  [ MaxVerevkin ]
+  * bluetooth: assume device disappeared when dbus call fails
+  * tea_timer: add done_cmd option
+
+  [ Max Verevkin ]
+  * focused_window: replace ristate with wlr_toplevel_management (#1687)
+
+  [ MaxVerevkin ]
+  * update dependencies
+  * use wayrs_protocols
+
+  [ Jason Nader ]
+  * docs: add networkmanager example
+  * docs: add battery example
+
+  [ MaxVerevkin ]
+  * update zbus
+  * formatting: implement named arguments instead of positional
+  * formatting: add "pango" arg to "str" formatter
+  * formatting: merge "rot-str" into "str"
+  * formatting: set default number width to 2
+  * formatting: move pango out of str formatter
+
+  [ Jason Nader ]
+  * music: do not switch players if there is no metadata
+
+  [ MaxVerevkin ]
+  * make parse error messages a bit better
+
+  [ Jason Nader ]
+  * fix typo
+  * docs: add note about 1i prefix
+  * music: refactor logic
+
+  [ Max Verevkin ]
+  * implement merge_with_next option (#1711)
+
+  [ Jason Nader ]
+  * run cargo +nightly clippy --fix -Z unstable-options
+
+  [ MaxVerevkin ]
+  * fix outdated docs
+
+  [ Max Verevkin ]
+  * replace cpu icon with cpu_{low,med,high} (#1713)
+
+  [ Santeri Salmijärvi ]
+  * apt: Add option to ignore waiting phased updates (#1717)
+
+  [ MaxVerevkin ]
+  * use dirs instead of dirs-next
+  * music: update the block when manually switching players
+  * apt: convert path to str only once
+
+  [ Bryan Malyn ]
+  * Add playerctld support to music block
+  * Only update current music player if there's meta data and the player is playing
+  * Update font awesome music next/prev icons
+  * Only add music player if player Ok, else add to debug log
+  * Fix font awesome 6 tea icon
+
+  [ Max Verevkin ]
+  * music: remove seek_step, add seek_step_secs (#1718)
+
+  [ Bryan Malyn ]
+  * Add service_status block
+  * Add datetime value parser
+  * Remove DummyConfig
+  * Clean up the formatter error code
+
+  [ MaxVerevkin ]
+  * sound/pa: ignore closed event listeners
+  * sound/pa: remove some unnecessary Lazy<Mutex<T>>
+  * allow icon configs to contain lists instead of strings, remove icons such as bat_N
+
+  [ Jason Nader ]
+  * Update awesome6.toml
+  * Update awesome6.toml
+  * Rename awesome.toml to awesome4.toml
+
+  [ Bryan Malyn ]
+  * Add volume control for music players
+  * Fix tea icon for awesome4 (#1730)
+
+  [ MaxVerevkin ]
+  * update doc/themes.md
+
+  [ Bryan Malyn ]
+  * Fix UPower when device is missing
+
+  [ MaxVerevkin ]
+  * cpu: add max_frequency
+
+  [ Bryan Malyn ]
+  * Allow UPower device to be missing on startup
+
+  [ MaxVerevkin ]
+  * fix example config
+
+  [ Bryan Malyn ]
+  * Fix upower bug if device goes missing while the status is being updated
+
+  [ Carlos Fernandez Sanz ]
+  * Add required LF to num (#1735)
+
+  [ MaxVerevkin ]
+  * allow clippy::extra_unused_type_parameters
+
+  [ Ole Martin Ruud ]
+  * bluetooth: identify audio-headphones as headphones (#1739)
+
+  [ Carlos Fernandez Sanz ]
+  * Add width, w for constant width on str formatter (#1737)
+
+  [ Bryan Malyn ]
+  * UPower: only return wait_for_change when an update is available
+
+  [ Jason Nader ]
+  * docs: clarify device name for UPower
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update README.md
+  * Update NEWS.md
+
+  [ MaxVerevkin ]
+  * Update NEWS.md
+  * taskwarrior: revert "Experimentally use format flags instead of format, format_singular and format_everything_done"
+  * bluetooth: mention exeprimental features of bluez
+
+  [ Jason Nader ]
+  * remove unnecessary comment
+  * Remove note about v0.22
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+
+  [ MaxVerevkin ]
+  * Update NEWS.md
+
+  [ Jason Nader ]
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Rename dev.md to manual_install.md
+  * Update README.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update NEWS.md
+  * Update battery.rs
+  * Update battery.rs
+  * chore: regenerate manpage
+  * Update README.md
+  * Update CONTRIBUTING.md
+  * Update CONTRIBUTING.md
+
+  [ MaxVerevkin ]
+  * fix build on 32-bit sysytems
+  * v0.30.1
+  * net: ignore "Failed to open nl80211 socket" error
+  * load: improve example config and default format
+
+  [ Bryan Malyn ]
+  * Fix time block locale (#1748)
+
+  [ Max Verevkin ]
+  * music: make volume optional (#1749)
+
+  [ MaxVerevkin ]
+  * v0.30.2
+  * Update NEWS.md
+  * netlink: idd explicit assert_eq
+  * net: select first available local ip
+
+  [ leongross ]
+  * music: fix typo for 'play' and 'preferred' (#1754)
+
+  [ Bryan Malyn ]
+  * Fix typos (#1738)
+
+  [ omkar-mohanty ]
+  * time: implement cycling through timezones
+
+  [ MaxVerevkin ]
+  * net: do not panic if ip addr has wrong length
+  * setting a click handler without action disables default action
+  * readme: list all possible `button` values
+  * Update NEWS.md
+  * Update NEWS.md
+  * make pomodoro usable again
+  * v0.30.3
+
+  [ Arne Beer ]
+  * docs: Fix alphabetic order in v0.30 deprecation table
+  * docs: Add some missing deprecations to NEWS.md
+
+  [ MaxVerevkin ]
+  * add `State` aliases
+  * net: prefer default iface if multiple ifaces match
+
+  [ Nikolai Vincent Vaags ]
+  * cpu: make frequency optional (#1767)
+
+  [ Bryan Malyn ]
+  * Fix more typos
+
+  [ MaxVerevkin ]
+  * bluetooth: change block color based on battery level
+
+  [ Jason Nader ]
+  * memory: consider zfs_arc_cache as available memory
+
+  [ Frederik Schwan ]
+  * blocks/watson: Avoid error on race condition while reading state (#1776)
+
+  [ Bryan Malyn ]
+  * Add back missing default icons
+
+  [ Jason Nader ]
+  * memory: take into account zfs_arc_min
+  * remove TODO
+
+  [ MaxVerevkin ]
+  * memory: use saturating_sub
+  * Update NEWS.md
+
+  [ Bryan Malyn ]
+  * backlight: reconnect after monitor sleeps (#1789)
+
+  [ Regolith Linux ]
+  * Use quilt format to resolve build error on debian testing
+
+  [ MaxVerevkin ]
+  * nvidia_gpu: default to 0 for absent values
+  * bluetooth: update when new interfaces are added
+  * clap: generate --help
+  * net: try to fetch ssid from NL80211_BSS_INFORMATION_ELEMENTS
+
+  [ Oskar ]
+  * Document install settings for non-glibc systems (#1787)
+
+  [ MaxVerevkin ]
+  * net: port i3status NL80211_BSS_INFORMATION_ELEMENTS parsing
+  * netlink: select relevant bss
+  * Update NEWS.md
+
+  [ Bryan Malyn ]
+  * backlight: dbus fallback to sysfs (#1791)
+
+  [ Peter Holloway ]
+  * Stop find_files requiring a specific extension (#1779)
+
+  [ MaxVerevkin ]
+  * update dependencies
+  * v0.30.4
+
+  [ Bryan Malyn ]
+  * backlight: Improve ddcci interactions (#1770)
+
+  [ MaxVerevkin ]
+  * minor refactor
+  * fix merge_with_next with non-native separators
+  * fix clippy lint
+
+  [ Bryan Malyn ]
+  * Add pre-commit
+  * Remove rust workflows in favor of pre-commit
+  * Ran cargo fmt
+
+  [ MaxVerevkin ]
+  * pomodoro: actually apply format config
+  * WIP: amd_gpu block
+
+  [ Jason Nader ]
+  * fix typo
+
+  [ MaxVerevkin ]
+  * battery: fix upower default device
+  * battery: make DisplayDevice path constant
+  * battery: simplify upower code
+
+  [ Jason Nader ]
+  * add note about DisplayDevice
+
+  [ Carlos Fernandez Sanz ]
+  * battery: Filter battery selection by model (#1808)
+
+  [ Tushar Dahiya ]
+  * Fix typos (#1807)
+
+  [ MaxVerevkin ]
+  * fix typos and fmt
+
+  [ Jason Nader ]
+  * Update CONTRIBUTING.md
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * custom: support shell expansions in `watch_files`
+  * fix color of separators when used with merge_with_next
+
+  [ Pierre Carru ]
+  * custom: document action="cycle" (#1817)
+
+  [ MaxVerevkin ]
+  * cpu: do not divide by zero
+  * custom_dbus: fix default format
+
+  [ Oskar ]
+  * external_ip: allow forcing legacy (v4) IP (#1801)
+
+  [ MaxVerevkin ]
+  * fix --help page
+
+  [ marcybell ]
+  * fix: hueshift block step now maxes at 500 (#1827)
+
+  [ MaxVerevkin ]
+  * conifg,theme,icons: do not look for files relative to the CWD
+  * generate manpage in xtask, add mangape to gitignore
+  * xtask: clap_mangen integration
+  * xtask: create man directory if necessary
+  * move more stuff to lib.rs
+  * install.sh: generate and install manpage
+  * docs: document manpage generation process
+  * cpu: fix typo
+  * install.sh: respect XDG_DATA_HOME
+
+  [ Jason Nader ]
+  * install.sh: respect $HOME
+  * Update NEWS.md
+  * v0.30.5
+  * fix typo
+  * Update NEWS.md
+  * Update NEWS.md
+
+  [ MaxVerevkin ]
+  * formatting: add 'pad_with' argument for .eng formatter
+  * net: make net_wireless icon dynamic
+  * manual_install.md: mention pango dependecy for cargo xtask
+  * improve some error messages
+
+  [ Jason Nader ]
+  * Update sound.rs
+
+  [ MaxVerevkin ]
+  * remove tokio_test dependency
+  * docs: add doc(cfg(feature = ...)) for optional blocks
+  * update readme
+  * bluetooth: add battery_state config option
+  * bluetooth: add $battery_icon placeholder
+  * Update NEWS.md
+  * refactor bluetooths battery_level
+
+  [ tetraxile ]
+  * time: implement `prev_timezone` action (#1839)
+
+  [ Bryan Malyn ]
+  * Update NEWS.md
+
+  [ Maxwell Anderson ]
+  * cpu: fix error message typo in read_proc_stat (#1840)
+
+  [ Bryan Malyn ]
+  * Split backlight into external lib (calibright)
+
+  [ chris ]
+  * Feature: VPN block (#1725)
+
+  [ MaxVerevkin ]
+  * fix doctest
+
+  [ Gernot Messow ]
+  * apt: Force apt output to be in default language (#1843)
+
+  [ MaxVerevkin ]
+  * Update NEWS.md
+  * battery: fix docs markup
+  * notify: listen to swaync's SubscribeV2 signal
+  * Update NEWS.md
+  * v0.30.6
+
+  [ Bryan Malyn ]
+  * backlight: add missing_format
+
+  [ MaxVerevkin ]
+  * Update README.md
+
+  [ dependabot[bot] ]
+  * build(deps): bump openssl from 0.10.45 to 0.10.48
+
+  [ antecrescent ]
+  * manual_install.md: optional notmuch block depends upon libnotmuch.so (#1847)
+
+  [ MaxVerevkin ]
+  * remove unused tokio-stream
+  * remove implicit .clone() in api.set_widget()
+  * remove unnecessary .set_values()
+  * kdeconnect: do not fail if notifications are not available
+  * time: fix default interval (docs say it is 10)
+  * try to fix CI
+
+  [ Jason Nader ]
+  * Update README.md
+
+  [ Elbert Ronnie ]
+  * add `mappings_regex` that can take regex as key
+
+  [ MaxVerevkin ]
+  * docs: fix markdown
+
+  [ Elbert Ronnie ]
+  * remove `mappings_regex` and add `mappings_use_regex`
+
+  [ Gwenaël Ropert ]
+  * docs: fix Switch GTK Theme example (#1852)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * cargo update
+  * formatting: fix '.eng(p:Ti)'
+
+  [ Jason Nader ]
+  * Update NEWS.md
+  * Update NEWS.md
+  * sound: add active_port specifier let it be mapped
+  * fix clippy warning
+  * sound: add missing changes for active_port
+  * bump ver
+  * Add release-process.md
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+
+  [ Jason Nader ]
+  * sound: fix example in docs
+
+  [ MaxVerevkin ]
+  * move some docs from readme to blocks.rs
+  * custom: set child's stdin to null
+  * sound: add active_port_mappings, hide active_port when not available
+  * update NEWS.md
+  * docs: rearrange sound docs to match other blocks
+  * docs: fix some manpages by disabling texmath extension
+  * update NEWS.md
+
+  [ Max Verevkin ]
+  * formatting: try to fix rounding in .eng() (#1858)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * update crossbeam-channel (0.5.7 is yanked)
+  * update NEWS.md and README.md
+
+  [ Daniel Watkins ]
+  * formatting.rs: fix `rot_interval` default in docs (#1861)
+
+  [ dependabot[bot] ]
+  * build(deps): bump h2 from 0.3.16 to 0.3.17 (#1864)
+
+  [ MaxVerevkin ]
+  * net: fix missing format
+  * update example config
+  * battery: add charging_format
+
+  [ antecrescent ]
+  * Add profile for release binary with debug symbols (#1863) (#1868)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * cargo update
+  * vpn: fix rendering by allowing .set_values() before .set_format()
+
+  [ Bryan Malyn ]
+  * calibright config: do not look for files relative to the CWD. (#1881)
+
+  [ MaxVerevkin ]
+  * handle config errors better (but require block=".." to be the first field of block config)
+  * sound: default mappings_use_regex to true
+  * update NEWS.md
+  * backlight: fix calibright link
+  * sound: dont use panic to terminate thread
+  * v0.31.0
+  * update NEWS.md
+  * sound: some refactoring of pa driver
+  * update release-process.md
+
+  [ Bryan Malyn ]
+  * Update material-nf icons
+  * Add thermometer progression
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * v0.31.1
+  * dont require block to be the first field
+  * simplify BlockConfig deserialization
+  * battery: recover from `get_info()` errors
+
+  [ Max Verevkin ]
+  * sound: reconnect to pa (#1889)
+
+  [ Eugene Lomov ]
+  * Added MullvadDriver in vpn widget (#1877)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * v0.31.2
+  * cargo update
+
+  [ Zero ]
+  * Add connectivity report (cell network) on kdeconnect block (#1873)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+
+  [ Zero ]
+  * Add vertical option for bar formatting (▁ ▂ ▃ ▄ ▅ ▆ ▇) (#1896)
+
+  [ MaxVerevkin ]
+  * simplify bar formatter a bit
+  * update NEWS.md
+  * v0.31.3
+  * update NEWS.md
+  * v0.31.4 (update cargo.lock)
+  * readme: note that `cargo install` is not supported
+  * remove redundant Block::widget_updates_sender
+  * move more stuff to lib.rs & make configs public
+  * net: revise `is_up()` logic & ignore IPs with `scope host`
+  * net: add inactive_format
+  * cargo update (some deps were yanked)
+  * update NEWS.md
+  * v0.31.5
+
+  [ Soumya Ranjan Patnaik ]
+  * feat: use faster indexing
+  * feat: add default config
+  * add runtime dependencies
+
+ -- Soumya Ranjan Patnaik <soumyaranjan1812@gmail.com>  Wed, 31 May 2023 15:26:39 +0530
+
 i3status-rs (0.1) jammy; urgency=medium
 
   * Initial release. 
