@@ -1,2 +1,3 @@
 target/release/i3status-rs /usr/bin/
-files/* /usr/share/i3status-rust
+config.toml /etc/regolith/i3status-rust/
+files/* /usr/share/i3status-rust/
