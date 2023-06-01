@@ -1,9 +1,10 @@
-i3status-rs (0.22.0) jammy; urgency=medium
+i3status-rs (0.22.0-1) jammy; urgency=medium
 
+  [ Soumya Ranjan patnaik ]
   * feat: add default config
   * match package version i3status-rs version
 
- -- Soumya Ranjan patnaik <soumyaranjan1812@gmail.com>  Fri, 18 Nov 2022 21:46:01 +0530
+ -- Regolith Linux <regolith.linux@gmail.com>  Wed, 31 May 2023 21:57:58 -0700
 
 i3status-rs (0.1) jammy; urgency=medium
 
