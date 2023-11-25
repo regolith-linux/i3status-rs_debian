@@ -7,12 +7,12 @@ block = "net"
 [[block]]
 block = "disk_space"
 path = "/"
-info_type = "used"
+info_type = "free"
 format = "{icon} {percentage}"
-alert_absolute = true
 unit = "GB"
-alert = 50
-warning = 40
+alert = 10
+warning = 15
+interval = 300
 
 [[block]]
 block = "memory"
@@ -22,15 +22,14 @@ format_swap = "{swap_used_percents}"
 
 [[block]]
 block = "battery"
-interval = 10
 format = " {percentage}"
 full_format = " {percentage}"
 hide_missing = true
-driver = "sysfs"
+driver = "upower"
 
 [[block]]
 block = "rofication"
-interval = 1
+interval = 5
 socket_path = "/tmp/rofi_notification_daemon"
 
 [[block]]
@@ -40,5 +39,5 @@ driver = "pulseaudio"
 [[block]]
 block = "time"
 interval = 5
-format = "%d/%m %R"
+format = "%R"
 
