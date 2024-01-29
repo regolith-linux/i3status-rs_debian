@@ -1,6 +1,7 @@
 use chrono::format::{Item, StrftimeItems};
 use chrono::{Local, Locale};
 use once_cell::sync::Lazy;
+use unicode_segmentation::UnicodeSegmentation;
 
 use std::fmt::Debug;
 use std::iter::repeat;
@@ -10,12 +11,14 @@ use super::parse::Arg;
 use super::prefix::Prefix;
 use super::unit::Unit;
 use super::value::ValueInner as Value;
+use crate::config::SharedConfig;
 use crate::errors::*;
 use crate::escape::CollectEscaped;
 
 const DEFAULT_STR_MIN_WIDTH: usize = 0;
 const DEFAULT_STR_MAX_WIDTH: usize = usize::MAX;
 const DEFAULT_STR_ROT_INTERVAL: Option<f64> = None;
+const DEFAULT_STR_ROT_SEP: Option<String> = None;
 
 const DEFAULT_BAR_VERTICAL: bool = false;
 const DEFAULT_BAR_WIDTH_HORIZONTAL: usize = 5;
@@ -32,6 +35,7 @@ pub const DEFAULT_STRING_FORMATTER: StrFormatter = StrFormatter {
     max_width: DEFAULT_STR_MAX_WIDTH,
     rot_interval_ms: None,
     init_time: None,
+    rot_separator: None,
 };
 
 // TODO: split those defaults
@@ -53,7 +57,7 @@ pub static DEFAULT_DATETIME_FORMATTER: Lazy<DatetimeFormatter> =
 pub const DEFAULT_FLAG_FORMATTER: FlagFormatter = FlagFormatter;
 
 pub trait Formatter: Debug + Send + Sync {
-    fn format(&self, val: &Value) -> Result<String>;
+    fn format(&self, val: &Value, config: &SharedConfig) -> Result<String>;
 
     fn interval(&self) -> Option<Duration> {
         None
@@ -66,6 +70,7 @@ pub fn new_formatter(name: &str, args: &[Arg]) -> Result<Box<dyn Formatter>> {
             let mut min_width = DEFAULT_STR_MIN_WIDTH;
             let mut max_width = DEFAULT_STR_MAX_WIDTH;
             let mut rot_interval = DEFAULT_STR_ROT_INTERVAL;
+            let mut rot_separator = DEFAULT_STR_ROT_SEP;
             for arg in args {
                 match arg.key {
                     "min_width" | "min_w" => {
@@ -84,6 +89,9 @@ pub fn new_formatter(name: &str, args: &[Arg]) -> Result<Box<dyn Formatter>> {
                                 .parse()
                                 .error("Interval must be a positive number")?,
                         );
+                    }
+                    "rot_separator" => {
+                        rot_separator = Some(arg.val.to_string());
                     }
                     other => {
                         return Err(Error::new(format!("Unknown argument for 'str': '{other}'")));
@@ -105,6 +113,7 @@ pub fn new_formatter(name: &str, args: &[Arg]) -> Result<Box<dyn Formatter>> {
                 max_width,
                 rot_interval_ms: rot_interval.map(|x| (x * 1e3) as u64),
                 init_time: Some(Instant::now()),
+                rot_separator,
             }))
         }
         "pango-str" => {
@@ -182,36 +191,44 @@ pub struct StrFormatter {
     max_width: usize,
     rot_interval_ms: Option<u64>,
     init_time: Option<Instant>,
+    rot_separator: Option<String>,
 }
 
 impl Formatter for StrFormatter {
-    fn format(&self, val: &Value) -> Result<String> {
+    fn format(&self, val: &Value, config: &SharedConfig) -> Result<String> {
         match val {
             Value::Text(text) => {
-                let width = text.chars().count();
+                let text: Vec<&str> = text.graphemes(true).collect();
+                let width = text.len();
                 Ok(match (self.rot_interval_ms, self.init_time) {
                     (Some(rot_interval_ms), Some(init_time)) if width > self.max_width => {
-                        let width = width + 1; // Now we include '|' at the end
+                        let rot_separator: Vec<&str> = self
+                            .rot_separator
+                            .as_deref()
+                            .unwrap_or("|")
+                            .graphemes(true)
+                            .collect();
+                        let width = width + rot_separator.len(); // Now we include `rot_separator` at the end
                         let step = (init_time.elapsed().as_millis() as u64 / rot_interval_ms)
                             as usize
                             % width;
                         let w1 = self.max_width.min(width - step);
-                        text.chars()
-                            .chain(Some('|'))
+                        text.iter()
+                            .chain(rot_separator.iter())
                             .skip(step)
                             .take(w1)
-                            .chain(text.chars())
+                            .chain(text.iter())
                             .take(self.max_width)
                             .collect_pango_escaped()
                     }
                     _ => text
-                        .chars()
-                        .chain(repeat(' ').take(self.min_width.saturating_sub(width)))
+                        .iter()
+                        .chain(repeat(&" ").take(self.min_width.saturating_sub(width)))
                         .take(self.max_width)
                         .collect_pango_escaped(),
                 })
             }
-            Value::Icon(icon) => Ok(icon.clone()), // No escaping
+            Value::Icon(icon, value) => config.get_icon(icon, *value),
             other => Err(Error::new_format(format!(
                 "{} cannot be formatted with 'str' formatter",
                 other.type_name(),
@@ -228,9 +245,10 @@ impl Formatter for StrFormatter {
 pub struct PangoStrFormatter;
 
 impl Formatter for PangoStrFormatter {
-    fn format(&self, val: &Value) -> Result<String> {
+    fn format(&self, val: &Value, config: &SharedConfig) -> Result<String> {
         match val {
-            Value::Text(x) | Value::Icon(x) => Ok(x.clone()), // No escaping
+            Value::Text(x) => Ok(x.clone()), // No escaping
+            Value::Icon(icon, value) => config.get_icon(icon, *value),
             other => Err(Error::new_format(format!(
                 "{} cannot be formatted with 'str' formatter",
                 other.type_name(),
@@ -257,7 +275,7 @@ const VERTICAL_BAR_CHARS: [char; 9] = [
 ];
 
 impl Formatter for BarFormatter {
-    fn format(&self, val: &Value) -> Result<String> {
+    fn format(&self, val: &Value, _config: &SharedConfig) -> Result<String> {
         match val {
             Value::Number { mut val, .. } => {
                 val = (val / self.max_value).clamp(0., 1.);
@@ -385,7 +403,7 @@ impl EngFixConfig {
 pub struct EngFormatter(EngFixConfig);
 
 impl Formatter for EngFormatter {
-    fn format(&self, val: &Value) -> Result<String> {
+    fn format(&self, val: &Value, _config: &SharedConfig) -> Result<String> {
         match val {
             Value::Number { mut val, mut unit } => {
                 let is_negative = val.is_sign_negative();
@@ -425,7 +443,7 @@ impl Formatter for EngFormatter {
 
                 let sign = if is_negative { "-" } else { "" };
                 let mut retval = match self.0.width as i32 - digits {
-                    i32::MIN..=0 => format!("{sign}{}", val.floor()),
+                    i32::MIN..=0 => format!("{sign}{}", val.round()),
                     1 => format!("{}{sign}{}", self.0.pad_with, val.round() as i64),
                     rest => format!("{sign}{val:.*}", rest as usize - 1),
                 };
@@ -462,7 +480,7 @@ impl Formatter for EngFormatter {
 pub struct FixFormatter(EngFixConfig);
 
 impl Formatter for FixFormatter {
-    fn format(&self, val: &Value) -> Result<String> {
+    fn format(&self, val: &Value, _config: &SharedConfig) -> Result<String> {
         match val {
             Value::Number {
                 ..
@@ -514,7 +532,7 @@ impl DatetimeFormatter {
 }
 
 impl Formatter for DatetimeFormatter {
-    fn format(&self, val: &Value) -> Result<String> {
+    fn format(&self, val: &Value, _config: &SharedConfig) -> Result<String> {
         match val {
             Value::Datetime(datetime, timezone) => Ok(match self.locale {
                 Some(locale) => match timezone {
@@ -547,7 +565,7 @@ impl Formatter for DatetimeFormatter {
 pub struct FlagFormatter;
 
 impl Formatter for FlagFormatter {
-    fn format(&self, val: &Value) -> Result<String> {
+    fn format(&self, val: &Value, _config: &SharedConfig) -> Result<String> {
         match val {
             Value::Flag => Ok(String::new()),
             _ => {
@@ -561,57 +579,121 @@ impl Formatter for FlagFormatter {
 mod tests {
     use super::*;
 
+    macro_rules! fmt {
+    ($name:ident, $($key:ident : $value:tt),*) => {
+        new_formatter(stringify!($name), &[
+            $( Arg { key: stringify!($key), val: stringify!($value) } ),*
+        ]).unwrap()
+    };
+}
+
     #[test]
     fn eng_rounding_and_negatives() {
-        let fmt = new_formatter("eng", &[Arg { key: "w", val: "3" }]).unwrap();
+        let fmt = fmt!(eng, w: 3);
+        let config = SharedConfig::default();
 
         let result = fmt
-            .format(&Value::Number {
-                val: -1.0,
-                unit: Unit::None,
-            })
+            .format(
+                &Value::Number {
+                    val: -1.0,
+                    unit: Unit::None,
+                },
+                &config,
+            )
             .unwrap();
         assert_eq!(result, " -1");
 
         let result = fmt
-            .format(&Value::Number {
-                val: 9.9999,
-                unit: Unit::None,
-            })
+            .format(
+                &Value::Number {
+                    val: 9.9999,
+                    unit: Unit::None,
+                },
+                &config,
+            )
             .unwrap();
         assert_eq!(result, " 10");
 
-        // TODO: This should be " 1KB"
         let result = fmt
-            .format(&Value::Number {
-                val: 999.9,
-                unit: Unit::Bytes,
-            })
+            .format(
+                &Value::Number {
+                    val: 999.9,
+                    unit: Unit::Bytes,
+                },
+                &config,
+            )
             .unwrap();
-        assert_eq!(result, "999B");
+        assert_eq!(result, "1.0KB");
 
         let result = fmt
-            .format(&Value::Number {
-                val: -9.99,
-                unit: Unit::None,
-            })
+            .format(
+                &Value::Number {
+                    val: -9.99,
+                    unit: Unit::None,
+                },
+                &config,
+            )
             .unwrap();
         assert_eq!(result, "-10");
 
         let result = fmt
-            .format(&Value::Number {
-                val: 9.94,
-                unit: Unit::None,
-            })
+            .format(
+                &Value::Number {
+                    val: 9.94,
+                    unit: Unit::None,
+                },
+                &config,
+            )
             .unwrap();
         assert_eq!(result, "9.9");
 
         let result = fmt
-            .format(&Value::Number {
-                val: 9.95,
-                unit: Unit::None,
-            })
+            .format(
+                &Value::Number {
+                    val: 9.95,
+                    unit: Unit::None,
+                },
+                &config,
+            )
             .unwrap();
         assert_eq!(result, " 10");
+
+        let fmt = fmt!(eng, w: 5, p: 1);
+        let result = fmt
+            .format(
+                &Value::Number {
+                    val: 321_600_000_000.,
+                    unit: Unit::Bytes,
+                },
+                &config,
+            )
+            .unwrap();
+        assert_eq!(result, "321.6GB");
+    }
+
+    #[test]
+    fn eng_prefixes() {
+        let config = SharedConfig::default();
+        // 14.96 GiB
+        let val = Value::Number {
+            val: 14.96 * 1024. * 1024. * 1024.,
+            unit: Unit::Bytes,
+        };
+
+        let fmt = fmt!(eng, w: 5, p: Mi);
+        let result = fmt.format(&val, &config).unwrap();
+        assert_eq!(result, "14.96GiB");
+
+        let fmt = fmt!(eng, w: 4, p: Mi);
+        let result = fmt.format(&val, &config).unwrap();
+        assert_eq!(result, "15.0GiB");
+
+        let fmt = fmt!(eng, w: 3, p: Mi);
+        let result = fmt.format(&val, &config).unwrap();
+        assert_eq!(result, " 15GiB");
+
+        let fmt = fmt!(eng, w: 2, p: Mi);
+        let result = fmt.format(&val, &config).unwrap();
+        assert_eq!(result, "15GiB");
     }
 }

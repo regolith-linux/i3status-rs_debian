@@ -79,7 +79,8 @@ pub enum DriverType {
     SwayNC,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
+    let mut actions = api.get_actions().await?;
     api.set_default_actions(&[(MouseButton::Left, None, "toggle_paused")])
         .await?;
 
@@ -96,7 +97,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 
         let mut widget = Widget::new().with_format(format.clone());
         widget.set_values(map!(
-            "icon" => Value::icon(api.get_icon(if is_paused { ICON_OFF } else { ICON_ON })?),
+            "icon" => Value::icon(if is_paused { ICON_OFF } else { ICON_ON }),
             [if notification_count != 0] "notification_count" => Value::number(notification_count),
             [if is_paused] "paused" => Value::flag(),
         ));
@@ -109,11 +110,11 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 
         select! {
             x = driver.wait_for_change() => x?,
-            event = api.event() => match event {
-                Action(a) if a == "toggle_paused" => {
+            Some(action) = actions.recv() => match action.as_ref() {
+                "toggle_paused" => {
                     driver.set_paused(!is_paused).await?;
                 }
-                Action(a) if a == "show" => {
+                "show" => {
                     driver.notification_show().await?;
                 }
                 _ => (),

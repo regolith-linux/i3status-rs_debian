@@ -126,7 +126,10 @@
 //! [MediaPlayer2 Interface]: https://specifications.freedesktop.org/mpris-spec/latest/Player_Interface.html
 
 use super::prelude::*;
+use crate::wrappers::DisplaySlice;
+
 use regex::Regex;
+use std::fmt;
 use zbus::fdo::{DBusProxy, NameOwnerChanged, PropertiesChanged};
 use zbus::names::{OwnedBusName, OwnedUniqueName};
 use zbus::{MatchRule, MessageStream};
@@ -163,7 +166,8 @@ pub enum PlayerName {
     Multiple(Vec<String>),
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
+    let mut actions = api.get_actions().await?;
     api.set_default_actions(&[
         (MouseButton::Left, Some(PLAY_PAUSE_BTN), "play_pause"),
         (MouseButton::Left, Some(NEXT_BTN), "next"),
@@ -182,17 +186,17 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 
     let volume_step = config.volume_step.clamp(0.0, 50.0) / 100.0;
 
-    let new_btn = |icon: &str, instance: &'static str, api: &mut CommonApi| -> Result<Value> {
-        Ok(Value::icon(api.get_icon(icon)?).with_instance(instance))
+    let new_btn = |icon: &str, instance: &'static str| -> Result<Value> {
+        Ok(Value::icon(icon.to_string()).with_instance(instance))
     };
 
     let values = map! {
-        "icon" => Value::icon(api.get_icon("music")?),
-        "next" => new_btn("music_next", NEXT_BTN, &mut api)?,
-        "prev" => new_btn("music_prev", PREV_BTN, &mut api)?,
+        "icon" => Value::icon("music"),
+        "next" => new_btn("music_next", NEXT_BTN)?,
+        "prev" => new_btn("music_prev", PREV_BTN)?,
     };
 
-    let preferred_players = match config.player {
+    let preferred_players = match config.player.clone() {
         PlayerName::Single(name) => vec![name],
         PlayerName::Multiple(names) => names,
     };
@@ -252,7 +256,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
             .msg_type(zbus::MessageType::Signal)
             .interface("org.freedesktop.DBus")
             .and_then(|x| x.member("NameOwnerChanged"))
-            .and_then(|x| x.arg0namespace("org.mpris.MediaPlayer2"))
+            .and_then(|x| x.arg0ns("org.mpris.MediaPlayer2"))
             .unwrap()
             .build(),
         &dbus_conn,
@@ -267,15 +271,12 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
         .error("Failed to create ActivePlayerChangeEndStream")?;
 
     loop {
-        debug!("available players:");
-        for player in &players {
-            debug!("{}", player.bus_name);
-        }
+        debug!("available players: {}", DisplaySlice(&players));
 
         let avail = players.len();
         let player = cur_player.map(|c| players.get_mut(c).unwrap());
         match player {
-            Some(ref player) => {
+            Some(player) => {
                 let mut values = values.clone();
                 values.insert("avail".into(), Value::number(avail));
                 values.insert("cur".into(), Value::number(cur_player.unwrap() + 1));
@@ -291,7 +292,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                     Some(PlaybackStatus::Playing) => (State::Info, "music_pause"),
                     _ => (State::Idle, "music_play"),
                 };
-                values.insert("play".into(), new_btn(play_icon, PLAY_PAUSE_BTN, &mut api)?);
+                values.insert("play".into(), new_btn(play_icon, PLAY_PAUSE_BTN)?);
                 if let Some(url) = &player.metadata.url {
                     values.insert("url".into(), Value::text(url.clone()));
                 }
@@ -324,7 +325,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                 if let Some(volume) = player.volume {
                     values.insert(
                         "volume_icon".into(),
-                        Value::icon(api.get_icon_in_progression("volume", volume)?),
+                        Value::icon_progression("volume", volume),
                     );
                     values.insert("volume".into(), Value::percents(volume * 100.0));
                 }
@@ -335,7 +336,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
             }
             None => {
                 let mut widget = Widget::new().with_format(format.clone());
-                widget.set_values(map!("icon" => Value::icon(api.get_icon("music")?)));
+                widget.set_values(map!("icon" => Value::icon("music")));
                 api.set_widget(widget).await?;
             }
         }
@@ -377,16 +378,20 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                     let msg = NameOwnerChanged::from_message(msg).unwrap();
                     let args = msg.args().unwrap();
                     match (args.old_owner.as_ref(), args.new_owner.as_ref()) {
-                        (None, Some(new)) => if player_matches(args.name.as_str(), &preferred_players, &exclude_regex) {
-                            match Player::new(&dbus_conn, args.name.to_owned().into(), new.to_owned().into()).await {
-                                Ok(player) => players.push(player),
-                                Err(e) => {
-                                    debug!("{e}");
-                                },
+                        (None, Some(new)) => {
+                            debug!("new player {} owned by {new}", args.name);
+                            if player_matches(args.name.as_str(), &preferred_players, &exclude_regex) {
+                                match Player::new(&dbus_conn, args.name.to_owned().into(), new.to_owned().into()).await {
+                                    Ok(player) => players.push(player),
+                                    Err(e) => {
+                                        debug!("{e}");
+                                    },
+                                }
                             }
                         }
                         (Some(old), None) => {
                             if let Some(pos) = players.iter().position(|p| &*p.owner == old) {
+                                debug!("removed player {} owned by {old}", args.name);
                                 players.remove(pos);
                                 if let Some(cur) = cur_player {
                                     if players.is_empty() {
@@ -403,7 +408,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                     }
                     break;
                 }
-                Some(msg)  = active_player_change_end_stream.next() => {
+                Some(msg) = active_player_change_end_stream.next() => {
                     let args = msg.args().unwrap();
                     if let Some(pos) = players.iter().position(|p| p.bus_name == args.name){
                         cur_player = Some(pos);
@@ -417,42 +422,39 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                     }
                     break;
                 }
-                event = api.event() => match event {
-                    UpdateRequest => (),
-                    Action(a) => {
-                        if let Some(i) = cur_player {
-                            let player = &players[i];
-                            match a.as_ref() {
-                                "play_pause" => {
-                                    player.play_pause().await?;
-                                }
-                                "next" => {
-                                    player.next().await?;
-                                }
-                                "prev" => {
-                                    player.prev().await?;
-                                }
-                                "next_player" => {
-                                    cur_player = Some((i + 1) % players.len());
-                                    if let Err(e) = playerctld_proxy.shift().await{
-                                        debug!("{e}");
-                                    }
-                                    break;
-                                }
-                                "seek_forward" => {
-                                    player.seek(config.seek_step_secs.0.as_micros() as i64).await?;
-                                }
-                                "seek_backward" => {
-                                    player.seek(-(config.seek_step_secs.0.as_micros() as i64)).await?;
-                                }
-                                "volume_up" => {
-                                    player.set_volume(volume_step).await?;
-                                }
-                                "volume_down" => {
-                                    player.set_volume(-volume_step).await?;
-                                }
-                                _ => (),
+                Some(action) = actions.recv() => {
+                    if let Some(i) = cur_player {
+                        let player = &players[i];
+                        match action.as_ref() {
+                            "play_pause" => {
+                                player.play_pause().await?;
                             }
+                            "next" => {
+                                player.next().await?;
+                            }
+                            "prev" => {
+                                player.prev().await?;
+                            }
+                            "next_player" => {
+                                cur_player = Some((i + 1) % players.len());
+                                if let Err(e) = playerctld_proxy.shift().await{
+                                    debug!("{e}");
+                                }
+                                break;
+                            }
+                            "seek_forward" => {
+                                player.seek(config.seek_step_secs.0.as_micros() as i64).await?;
+                            }
+                            "seek_backward" => {
+                                player.seek(-(config.seek_step_secs.0.as_micros() as i64)).await?;
+                            }
+                            "volume_up" => {
+                                player.set_volume(volume_step).await?;
+                            }
+                            "volume_down" => {
+                                player.set_volume(-volume_step).await?;
+                            }
+                            _ => (),
                         }
                     }
                 }
@@ -504,6 +506,8 @@ impl Player {
         bus_name: OwnedBusName,
         owner: OwnedUniqueName,
     ) -> Result<Player> {
+        debug!("creating Player for {bus_name}");
+
         let proxy = zbus_mpris::PlayerProxy::builder(dbus_conn)
             .destination(bus_name.clone())
             .error("failed to set proxy destination")?
@@ -511,11 +515,20 @@ impl Player {
             .await
             .error("failed to open player proxy")?;
 
-        let (metadata, status, volume) =
-            tokio::join!(proxy.metadata(), proxy.playback_status(), proxy.volume());
+        // debug!("querying player info");
+        // let (metadata, status, volume) =
+        //     tokio::join!(proxy.metadata(), proxy.playback_status(), proxy.volume());
+        debug!("querying player metadata");
+        let metadata = proxy.metadata().await;
+        debug!("querying player status");
+        let status = proxy.playback_status().await;
+        debug!("querying player volume");
+        let volume = proxy.volume().await;
 
         let metadata = metadata.error("failed to obtain player metadata")?;
         let status = status.error("failed to obtain player status")?;
+
+        debug!("Player created");
 
         Ok(Self {
             status: PlaybackStatus::from_str(&status),
@@ -562,6 +575,12 @@ impl Player {
                 .error("set_volume() failed")?;
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Player {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        extract_player_name(&self.bus_name).unwrap().fmt(f)
     }
 }
 

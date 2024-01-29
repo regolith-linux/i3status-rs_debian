@@ -4,7 +4,7 @@
 //!
 //! Key | Values | Default
 //! ----|--------|--------
-//! `format` | A string to customise the output of this block when in "Memory" view. See below for available placeholders. | `" $icon $mem_avail.eng(prefix:M)/$mem_total.eng(prefix:M)($mem_total_used_percents.eng(w:2)) "`
+//! `format` | A string to customise the output of this block when in "Memory" view. See below for available placeholders. | `" $icon $mem_used.eng(prefix:Mi)/$mem_total.eng(prefix:Mi)($mem_used_percents.eng(w:2)) "`
 //! `format_alt` | If set, block will switch between `format` and `format_alt` on every click | `None`
 //! `interval` | Update interval in seconds | `5`
 //! `warning_mem` | Percentage of memory usage, where state is set to warning | `80.0`
@@ -45,7 +45,7 @@
 //! [[block]]
 //! block = "memory"
 //! format = " $icon $mem_used_percents.eng(w:1) "
-//! format_alt = " $icon_swap $swap_free.eng(w:3,u:B,p:M)/$swap_total.eng(w:3,u:B,p:M)($swap_used_percents.eng(w:2)) "
+//! format_alt = " $icon_swap $swap_free.eng(w:3,u:B,p:Mi)/$swap_total.eng(w:3,u:B,p:Mi)($swap_used_percents.eng(w:2)) "
 //! interval = 30
 //! warning_mem = 70
 //! critical_mem = 90
@@ -80,14 +80,15 @@ pub struct Config {
     pub critical_swap: f64,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
+    let mut actions = api.get_actions().await?;
     api.set_default_actions(&[(MouseButton::Left, None, "toggle_format")])
         .await?;
 
     let mut format = config.format.with_default(
-        " $icon $mem_avail.eng(prefix:M)/$mem_total.eng(prefix:M)($mem_total_used_percents.eng(w:2)) ",
+        " $icon $mem_used.eng(prefix:Mi)/$mem_total.eng(prefix:Mi)($mem_used_percents.eng(w:2)) ",
     )?;
-    let mut format_alt = match config.format_alt {
+    let mut format_alt = match &config.format_alt {
         Some(f) => Some(f.with_default("")?),
         None => None,
     };
@@ -149,8 +150,8 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 
         let mut widget = Widget::new().with_format(format.clone());
         widget.set_values(map! {
-            "icon" => Value::icon(api.get_icon("memory_mem")?),
-            "icon_swap" => Value::icon(api.get_icon("memory_swap")?),
+            "icon" => Value::icon("memory_mem"),
+            "icon_swap" => Value::icon("memory_swap"),
             "mem_total" => Value::bytes(mem_total),
             "mem_free" => Value::bytes(mem_free),
             "mem_free_percents" => Value::percents(mem_free / mem_total * 100.),
@@ -196,9 +197,9 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
         loop {
             select! {
                 _ = timer.tick() => break,
-                event = api.event() => match event {
-                    UpdateRequest => break,
-                    Action(a) if a == "toggle_format" => {
+                _ = api.wait_for_update_request() => break,
+                Some(action) = actions.recv() => match action.as_ref() {
+                    "toggle_format" => {
                         if let Some(ref mut format_alt) = format_alt {
                             std::mem::swap(format_alt, &mut format);
                             break;

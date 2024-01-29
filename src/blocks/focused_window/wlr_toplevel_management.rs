@@ -3,8 +3,8 @@ use crate::blocks::prelude::*;
 
 use wayrs_protocols::wlr_foreign_toplevel_management_unstable_v1::*;
 
-use wayrs_client::connection::Connection;
 use wayrs_client::global::GlobalsExt;
+use wayrs_client::{Connection, EventCtx};
 
 pub(super) struct WlrToplevelManagement {
     conn: Connection<State>,
@@ -27,11 +27,9 @@ struct Toplevel {
 
 impl WlrToplevelManagement {
     pub(super) async fn new() -> Result<Self> {
-        let mut conn = Connection::connect().error("failed to connect to wayland")?;
-        let globals = conn
-            .async_collect_initial_globals()
+        let (mut conn, globals) = Connection::async_connect_and_collect_globals()
             .await
-            .error("wayland error")?;
+            .error("failed to connect to wayland")?;
 
         let _: ZwlrForeignToplevelManagerV1 = globals
             .bind_with_cb(&mut conn, 1..=3, toplevel_manager_cb)
@@ -67,36 +65,29 @@ impl Backend for WlrToplevelManagement {
     }
 }
 
-fn toplevel_manager_cb(
-    conn: &mut Connection<State>,
-    state: &mut State,
-    _: ZwlrForeignToplevelManagerV1,
-    event: zwlr_foreign_toplevel_manager_v1::Event,
-) {
-    match event {
-        zwlr_foreign_toplevel_manager_v1::Event::Toplevel(toplevel) => {
-            state.toplevels.insert(toplevel, default());
-            conn.set_callback_for(toplevel, toplevel_cb);
+fn toplevel_manager_cb(ctx: EventCtx<State, ZwlrForeignToplevelManagerV1>) {
+    use zwlr_foreign_toplevel_manager_v1::Event;
+    match ctx.event {
+        Event::Toplevel(toplevel) => {
+            ctx.state.toplevels.insert(toplevel, default());
+            ctx.conn.set_callback_for(toplevel, toplevel_cb);
         }
-        zwlr_foreign_toplevel_manager_v1::Event::Finished => {
-            state.error = Some(Error::new("unexpected 'finished' event"));
-            conn.break_dispatch_loop();
+        Event::Finished => {
+            ctx.state.error = Some(Error::new("unexpected 'finished' event"));
+            ctx.conn.break_dispatch_loop();
         }
         _ => (),
     }
 }
 
-fn toplevel_cb(
-    conn: &mut Connection<State>,
-    state: &mut State,
-    wlr_toplevel: ZwlrForeignToplevelHandleV1,
-    event: zwlr_foreign_toplevel_handle_v1::Event,
-) {
+fn toplevel_cb(ctx: EventCtx<State, ZwlrForeignToplevelHandleV1>) {
     use zwlr_foreign_toplevel_handle_v1::Event;
 
-    let toplevel = state.toplevels.get_mut(&wlr_toplevel).unwrap();
+    let Some(toplevel) = ctx.state.toplevels.get_mut(&ctx.proxy) else {
+        return;
+    };
 
-    match event {
+    match ctx.event {
         Event::Title(title) => {
             toplevel.title = Some(String::from_utf8_lossy(title.as_bytes()).into());
         }
@@ -107,21 +98,21 @@ fn toplevel_cb(
                 .any(|s| s == zwlr_foreign_toplevel_handle_v1::State::Activated as u32);
         }
         Event::Closed => {
-            if state.active_toplevel == Some(wlr_toplevel) {
-                state.active_toplevel = None;
-                state.new_title = Some(default());
+            if ctx.state.active_toplevel == Some(ctx.proxy) {
+                ctx.state.active_toplevel = None;
+                ctx.state.new_title = Some(default());
             }
 
-            wlr_toplevel.destroy(conn);
-            state.toplevels.remove(&wlr_toplevel);
+            ctx.proxy.destroy(ctx.conn);
+            ctx.state.toplevels.remove(&ctx.proxy);
         }
         Event::Done => {
             if toplevel.is_active {
-                state.active_toplevel = Some(wlr_toplevel);
-                state.new_title = Some(toplevel.title.clone().unwrap_or_default());
-            } else if state.active_toplevel == Some(wlr_toplevel) {
-                state.active_toplevel = None;
-                state.new_title = Some(default());
+                ctx.state.active_toplevel = Some(ctx.proxy);
+                ctx.state.new_title = Some(toplevel.title.clone().unwrap_or_default());
+            } else if ctx.state.active_toplevel == Some(ctx.proxy) {
+                ctx.state.active_toplevel = None;
+                ctx.state.new_title = Some(default());
             }
         }
         _ => (),

@@ -79,7 +79,7 @@ pub struct Config {
     pub use_ipv4: bool,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let format = config.format.with_default(" $ip $country_flag ")?;
 
     type UpdatesStream = Pin<Box<dyn Stream<Item = ()>>>;
@@ -137,7 +137,9 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
     };
 
     loop {
-        let info = api.recoverable(|| IPAddressInfo::new(client)).await?;
+        let fetch_info = || IPAddressInfo::new(client);
+        let info = fetch_info.retry(&ExponentialBuilder::default()).await?;
+
         let mut values = map! {
             "ip" => Value::text(info.ip),
             "version" => Value::text(info.version),

@@ -2,7 +2,7 @@
 //!
 //! Requires fakeroot to be installed (only required for pacman).
 //!
-//! Tip: You can grab the list of available updates using `fakeroot pacman -Qu --dbpath /tmp/checkup-db-i3statusrs/`.
+//! Tip: You can grab the list of available updates using `fakeroot pacman -Qu --dbpath /tmp/checkup-db-i3statusrs-$USER/`.
 //! If you have the `CHECKUPDATES_DB` env var set on your system then substitute that dir instead.
 //!
 //! Note: `pikaur` may hang the whole block if there is no internet connectivity [reference](https://github.com/actionless/pikaur/issues/595). In that case, try a different AUR helper.
@@ -68,7 +68,7 @@
 //! [[block.click]]
 //! # pop-up a menu showing the available updates. Replace wofi with your favourite menu command.
 //! button = "left"
-//! cmd = "fakeroot pacman -Qu --dbpath /tmp/checkup-db-i3statusrs/ | wofi --show dmenu"
+//! cmd = "fakeroot pacman -Qu --dbpath /tmp/checkup-db-i3statusrs-$USER/ | wofi --show dmenu"
 //! [[block.click]]
 //! # Updates the block on right click
 //! button = "right"
@@ -130,7 +130,11 @@ static PACMAN_UPDATES_DB: Lazy<PathBuf> = Lazy::new(|| {
         Some(val) => val.into(),
         None => {
             let mut path = env::temp_dir();
-            path.push("checkup-db-i3statusrs");
+            let user = env::var("USER");
+            path.push(format!(
+                "checkup-db-i3statusrs-{}",
+                user.as_deref().unwrap_or("no-user")
+            ));
             path
         }
     };
@@ -159,7 +163,7 @@ pub struct Config {
     pub aur_command: Option<String>,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let format = config.format.with_default(" $icon $pacman.eng(w:1) ")?;
     let format_singular = config
         .format_singular
@@ -182,6 +186,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
         Watched::Both(
             config
                 .aur_command
+                .as_deref()
                 .error("$aur or $both found in format string but no aur_command supplied")?,
         )
     } else if pacman && !aur {
@@ -190,6 +195,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
         Watched::Aur(
             config
                 .aur_command
+                .as_deref()
                 .error("$aur or $both found in format string but no aur_command supplied")?,
         )
     } else {
@@ -216,42 +222,36 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
     loop {
         let (mut values, warning, critical, total) = match &watched {
             Watched::Pacman => {
-                let updates = api.recoverable(get_pacman_available_updates).await?;
+                let updates = get_pacman_available_updates().await?;
                 let count = get_update_count(&updates);
                 let values = map!("pacman" => Value::number(count));
                 let warning = warning_updates_regex
                     .as_ref()
-                    .map_or(false, |regex| has_matching_update(&updates, regex));
+                    .is_some_and(|regex| has_matching_update(&updates, regex));
                 let critical = critical_updates_regex
                     .as_ref()
-                    .map_or(false, |regex| has_matching_update(&updates, regex));
+                    .is_some_and(|regex| has_matching_update(&updates, regex));
                 (values, warning, critical, count)
             }
             Watched::Aur(aur_command) => {
-                let updates = api
-                    .recoverable(|| get_aur_available_updates(aur_command))
-                    .await?;
+                let updates = get_aur_available_updates(aur_command).await?;
                 let count = get_update_count(&updates);
                 let values = map!(
                     "aur" => Value::number(count)
                 );
                 let warning = warning_updates_regex
                     .as_ref()
-                    .map_or(false, |regex| has_matching_update(&updates, regex));
+                    .is_some_and(|regex| has_matching_update(&updates, regex));
                 let critical = critical_updates_regex
                     .as_ref()
-                    .map_or(false, |regex| has_matching_update(&updates, regex));
+                    .is_some_and(|regex| has_matching_update(&updates, regex));
                 (values, warning, critical, count)
             }
             Watched::Both(aur_command) => {
-                let (pacman_updates, aur_updates) = api
-                    .recoverable(|| async {
-                        tokio::try_join!(
-                            get_pacman_available_updates(),
-                            get_aur_available_updates(aur_command)
-                        )
-                    })
-                    .await?;
+                let (pacman_updates, aur_updates) = tokio::try_join!(
+                    get_pacman_available_updates(),
+                    get_aur_available_updates(aur_command)
+                )?;
                 let pacman_count = get_update_count(&pacman_updates);
                 let aur_count = get_update_count(&aur_updates);
                 let values = map! {
@@ -259,11 +259,11 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                     "aur" =>    Value::number(aur_count),
                     "both" =>   Value::number(pacman_count + aur_count),
                 };
-                let warning = warning_updates_regex.as_ref().map_or(false, |regex| {
+                let warning = warning_updates_regex.as_ref().is_some_and(|regex| {
                     has_matching_update(&aur_updates, regex)
                         || has_matching_update(&pacman_updates, regex)
                 });
-                let critical = critical_updates_regex.as_ref().map_or(false, |regex| {
+                let critical = critical_updates_regex.as_ref().is_some_and(|regex| {
                     has_matching_update(&aur_updates, regex)
                         || has_matching_update(&pacman_updates, regex)
                 });
@@ -271,7 +271,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
             }
             Watched::None => (HashMap::new(), false, false, 0),
         };
-        values.insert("icon".into(), Value::icon(api.get_icon("update")?));
+        values.insert("icon".into(), Value::icon("update"));
 
         let mut widget = Widget::new();
         widget.set_format(match total {
@@ -302,11 +302,11 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Watched {
+enum Watched<'a> {
     None,
     Pacman,
-    Aur(String),
-    Both(String),
+    Aur(&'a str),
+    Both(&'a str),
 }
 
 async fn check_fakeroot_command_exists() -> Result<()> {

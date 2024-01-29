@@ -74,21 +74,22 @@ pub struct Config {
     pub critical: Option<Vec<String>>,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let format = config.format.with_default(" $icon $total.eng(w:1) ")?;
 
     let mut interval = config.interval.timer();
     let token = config
         .token
+        .clone()
         .or_else(|| std::env::var("I3RS_GITHUB_TOKEN").ok())
         .error("Github token not found")?;
 
     loop {
-        let mut widget = Widget::new().with_format(format.clone());
+        let stats = get_stats(&token).await?;
 
-        let stats = api.recoverable(|| get_stats(&token)).await?;
-        if stats.get("total").map_or(false, |x| *x > 0) || !config.hide_if_total_is_zero {
-            let mut state = State::Idle;
+        if stats.get("total").is_some_and(|x| *x > 0) || !config.hide_if_total_is_zero {
+            let mut widget = Widget::new().with_format(format.clone());
+
             'outer: for (list_opt, ret) in [
                 (&config.critical, State::Critical),
                 (&config.warning, State::Warning),
@@ -97,20 +98,21 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
             ] {
                 if let Some(list) = list_opt {
                     for val in list {
-                        if stats.get(val).map_or(false, |x| *x > 0) {
-                            state = ret;
+                        if stats.get(val).is_some_and(|x| *x > 0) {
+                            widget.state = ret;
                             break 'outer;
                         }
                     }
                 }
             }
+
             let mut values: HashMap<_, _> = stats
                 .into_iter()
                 .map(|(k, v)| (k.into(), Value::number(v)))
                 .collect();
-            values.insert("icon".into(), Value::icon(api.get_icon("github")?));
+            values.insert("icon".into(), Value::icon("github"));
             widget.set_values(values);
-            widget.state = state;
+
             api.set_widget(widget).await?;
         } else {
             api.hide().await?;
@@ -132,7 +134,8 @@ async fn get_stats(token: &str) -> Result<HashMap<String, usize>> {
     let mut stats = HashMap::new();
     let mut total = 0;
     for page in 1..100 {
-        let on_page = get_on_page(token, page).await?;
+        let fetch = || get_on_page(token, page);
+        let on_page = fetch.retry(&ExponentialBuilder::default()).await?;
         if on_page.is_empty() {
             break;
         }

@@ -58,18 +58,16 @@ pub struct Config {
     pub interval: Seconds,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
+    let mut actions = api.get_actions().await?;
     api.set_default_actions(&[(MouseButton::Left, None, "toggle_format")])
         .await?;
 
     let mut format = config.format.with_default(" $icon $utilization ")?;
-    let mut format_alt = match config.format_alt {
+    let mut format_alt = match &config.format_alt {
         Some(f) => Some(f.with_default("")?),
         None => None,
     };
-
-    let boost_icon_on = api.get_icon("cpu_boost_on")?;
-    let boost_icon_off = api.get_icon("cpu_boost_off")?;
 
     // Store previous /proc/stat state
     let mut cputime = read_proc_stat().await?;
@@ -105,12 +103,12 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 
         // Read boost state on intel CPUs
         let boost = boost_status().await.map(|status| match status {
-            true => boost_icon_on.clone(),
-            false => boost_icon_off.clone(),
+            true => "cpu_boost_on",
+            false => "cpu_boost_off",
         });
 
         let mut values = map!(
-            "icon" => Value::icon(api.get_icon_in_progression("cpu", utilization_avg)?),
+            "icon" => Value::icon_progression("cpu", utilization_avg),
             "barchart" => Value::text(barchart),
             "utilization" => Value::percents(utilization_avg * 100.),
             [if !freqs.is_empty()] "frequency" => Value::hertz(freqs.iter().sum::<f64>() / (freqs.len() as f64)),
@@ -140,9 +138,9 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
         loop {
             select! {
                 _ = timer.tick() => break,
-                event = api.event() => match event {
-                    UpdateRequest => break,
-                    Action(a) if a == "toggle_format" => {
+                _ = api.wait_for_update_request() => break,
+                Some(action) = actions.recv() => match action.as_ref() {
+                    "toggle_format" => {
                         if let Some(ref mut format_alt) = format_alt {
                             std::mem::swap(format_alt, &mut format);
                             break;

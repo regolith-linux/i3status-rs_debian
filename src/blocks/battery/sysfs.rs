@@ -208,7 +208,7 @@ impl BatteryDevice for Device {
 
         debug!("status = {:?}", status);
         debug!("capacity_level = {:?}", capacity_level);
-        debug!("capacity= {:?}", capacity);
+        debug!("capacity = {:?}", capacity);
         debug!("charge_now = {:?}", charge_now);
         debug!("charge_full = {:?}", charge_full);
         debug!("energy_now = {:?}", energy_now);
@@ -229,15 +229,19 @@ impl BatteryDevice for Device {
 
         let status = status.unwrap_or_default();
 
-        let calc_capacity = |(now, full)| (now / full * 100.0);
-        let capacity = capacity
-            .or_else(|| charge_now.zip(charge_full).map(calc_capacity))
-            .or_else(|| energy_now.zip(energy_full).map(calc_capacity))
+        // Prefer `charge_now/charge_full` and `energy_now/energy_full` because `capacity` is
+        // calculated using `_full_design`, which is not practical (#1410, #1906).
+        let calc_capacity = |now, full| Some(now? / full? * 100.0);
+        let capacity = calc_capacity(charge_now, charge_full)
+            .or_else(|| calc_capacity(energy_now, energy_full))
+            .or(capacity)
             .or_else(|| capacity_level.and_then(CapacityLevel::percentage))
             .error("Failed to get capacity")?;
 
         // A * V = W
-        let power = power_now.or_else(|| current_now.zip(voltage_now).map(|(c, v)| c * v));
+        let power = power_now
+            .or_else(|| current_now.zip(voltage_now).map(|(c, v)| c * v))
+            .filter(|&p| p != 0.0);
 
         // Ah * V = Wh
         // Wh / W = h

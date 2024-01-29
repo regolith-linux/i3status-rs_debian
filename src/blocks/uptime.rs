@@ -40,7 +40,7 @@ pub struct Config {
     pub interval: Seconds,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let format = config.format.with_default(" $icon $text ")?;
 
     loop {
@@ -74,7 +74,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 
         let mut widget = Widget::new().with_format(format.clone());
         widget.set_values(map! {
-          "icon" => Value::icon(api.get_icon("uptime")?),
+          "icon" => Value::icon("uptime"),
           "text" => Value::text(text)
         });
         api.set_widget(widget).await?;

@@ -64,7 +64,7 @@ pub struct Config {
     pub threshold_good: u32,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let format = config.format.with_default(" $icon $count ")?;
 
     let db = config.maildir.expand()?;
@@ -77,7 +77,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
         let mut widget = Widget::new().with_format(format.clone());
 
         widget.set_values(map! {
-            "icon" => Value::icon(api.get_icon("mail")?),
+            "icon" => Value::icon("mail"),
             "count" => Value::number(count)
         });
 
