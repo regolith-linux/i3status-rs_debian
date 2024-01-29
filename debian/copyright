@@ -3,7 +3,7 @@ Upstream-Name: i3status-rs
 Upstream-Contact: <https://github.com/greshake/i3status-rust>
 Source: <>https://github.com/greshake/i3status-rust
 
-Files: *
+Files: debian/*
 Copyright: 2022 Soumya Ranjan Patnaik <soumyaranjan1812@gmail.com>
 License: GPL-3.0
 This program is free software: you can redistribute it and/or modify it under 
