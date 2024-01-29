@@ -11,16 +11,16 @@ pub struct Config {
     lang: ApiLanguage,
 }
 
-pub(super) struct Service {
-    config: Config,
-    legend: LegendsStore,
+pub(super) struct Service<'a> {
+    config: &'a Config,
+    legend: &'static LegendsStore,
 }
 
-impl Service {
-    pub(super) async fn new(api: &mut CommonApi, config: Config) -> Result<Self> {
+impl<'a> Service<'a> {
+    pub(super) async fn new(config: &'a Config) -> Result<Service<'a>> {
         Ok(Self {
             config,
-            legend: api.recoverable(get_legend).await?,
+            legend: LEGENDS.as_ref().error("Invalid legends file")?,
         })
     }
 }
@@ -90,19 +90,10 @@ struct ForecastTimeInstant {
     relative_humidity: Option<f64>,
 }
 
-const LEGENDS_URL: &str = "https://api.met.no/weatherapi/weathericon/2.0/legends";
-const FORECAST_URL: &str = "https://api.met.no/weatherapi/locationforecast/2.0/compact";
+static LEGENDS: Lazy<Option<LegendsStore>> =
+    Lazy::new(|| serde_json::from_str(include_str!("met_no_legends.json")).ok());
 
-async fn get_legend() -> Result<LegendsStore> {
-    REQWEST_CLIENT
-        .get(LEGENDS_URL)
-        .send()
-        .await
-        .error("Failed to fetch legend from met.no")?
-        .json()
-        .await
-        .error("Legend replied in unknown format")
-}
+const FORECAST_URL: &str = "https://api.met.no/weatherapi/locationforecast/2.0/compact";
 
 fn translate(legend: &LegendsStore, summary: &str, lang: &ApiLanguage) -> String {
     legend
@@ -117,7 +108,7 @@ fn translate(legend: &LegendsStore, summary: &str, lang: &ApiLanguage) -> String
 }
 
 #[async_trait]
-impl WeatherProvider for Service {
+impl WeatherProvider for Service<'_> {
     async fn get_weather(&self, location: Option<Coordinates>) -> Result<WeatherResult> {
         let Config {
             coordinates,
@@ -161,7 +152,7 @@ impl WeatherProvider for Service {
             .split('_')
             .next()
             .unwrap();
-        let translated = translate(&self.legend, summary, lang);
+        let translated = translate(self.legend, summary, lang);
 
         let temp = instant.air_temperature.unwrap_or_default();
         let humidity = instant.relative_humidity.unwrap_or_default();

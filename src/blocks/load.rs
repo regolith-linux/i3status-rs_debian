@@ -46,7 +46,7 @@ pub struct Config {
     pub critical: f64,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let format = config.format.with_default(" $icon $1m.eng(w:4) ")?;
 
     // borrowed from https://docs.rs/cpuinfo/0.1.1/src/cpuinfo/count/logical.rs.html#4-6
@@ -83,7 +83,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
             _ => State::Idle,
         };
         widget.set_values(map! {
-            "icon" => Value::icon(api.get_icon("cogs")?),
+            "icon" => Value::icon("cogs"),
             "1m" => Value::number(m1),
             "5m" => Value::number(m5),
             "15m" => Value::number(m15),

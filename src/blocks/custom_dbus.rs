@@ -78,12 +78,12 @@ struct Block {
     short_text: Option<String>,
 }
 
-fn block_values(block: &Block, api: &CommonApi) -> Result<HashMap<Cow<'static, str>, Value>> {
-    Ok(map! {
-        [if let Some(icon) = &block.icon] "icon" => Value::icon(api.get_icon(icon)?),
+fn block_values(block: &Block) -> HashMap<Cow<'static, str>, Value> {
+    map! {
+        [if let Some(icon) = &block.icon] "icon" => Value::icon(icon.to_string()),
         [if let Some(text) = &block.text] "text" => Value::text(text.to_string()),
         [if let Some(short_text) = &block.short_text] "short_text" => Value::text(short_text.to_string()),
-    })
+    }
 }
 
 #[dbus_interface(name = "rs.i3status.custom")]
@@ -94,7 +94,7 @@ impl Block {
         } else {
             Some(icon.to_string())
         };
-        self.widget.set_values(block_values(self, &self.api)?);
+        self.widget.set_values(block_values(self));
         self.api.set_widget(self.widget.clone()).await?;
         Ok(())
     }
@@ -102,7 +102,7 @@ impl Block {
     async fn set_text(&mut self, full: String, short: String) -> fdo::Result<()> {
         self.text = Some(full);
         self.short_text = Some(short);
-        self.widget.set_values(block_values(self, &self.api)?);
+        self.widget.set_values(block_values(self));
         self.api.set_widget(self.widget.clone()).await?;
         Ok(())
     }
@@ -121,12 +121,7 @@ impl Block {
     }
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
-    // This block doesn't listen for any events. Closing the channel is necessary, because channels
-    // are bounded by the number of pending messages, and if we don't close it now, main thread
-    // will get blocked while trying to send a new message.
-    api.event_receiver.close();
-
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let widget = Widget::new().with_format(config.format.with_defaults(
         "{ $icon|}{ $text.pango-str()|} ",
         "{ $icon|} $short_text.pango-str() | ",
@@ -140,10 +135,10 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
     dbus_conn
         .object_server()
         .at(
-            config.path,
+            config.path.clone(),
             Block {
                 widget,
-                api,
+                api: api.clone(),
                 icon: None,
                 text: None,
                 short_text: None,

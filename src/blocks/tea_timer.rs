@@ -47,7 +47,8 @@ pub struct Config {
     pub done_cmd: Option<String>,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
+    let mut actions = api.get_actions().await?;
     api.set_default_actions(&[
         (MouseButton::Left, None, "increment"),
         (MouseButton::WheelUp, None, "increment"),
@@ -90,7 +91,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
         let mut widget = Widget::new().with_format(format.clone());
 
         widget.set_values(map!(
-            "icon" => Value::icon(api.get_icon("tea")?),
+            "icon" => Value::icon("tea"),
             [if is_timer_active] "hours" => Value::text(format!("{hours:02}")),
             [if is_timer_active] "minutes" => Value::text(format!("{minutes:02}")),
             [if is_timer_active] "seconds" => Value::text(format!("{seconds:02}")),
@@ -98,20 +99,18 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 
         api.set_widget(widget).await?;
 
-        tokio::select! {
+        select! {
             _ = timer.tick(), if is_timer_active => (),
-            event = api.event() => match event {
-                UpdateRequest => (),
-                Action(action) => {
-                    let now = Utc::now();
-                    match action.as_ref() {
-                        "increment" if is_timer_active => timer_end += increment,
-                        "increment" => timer_end = now + increment,
-                        "decrement" if is_timer_active => timer_end -= increment,
-                        "reset" => timer_end = now,
-                        _ => (),
-                    }
-                },
+            _ = api.wait_for_update_request() => (),
+            Some(action) = actions.recv() => {
+                let now = Utc::now();
+                match action.as_ref() {
+                    "increment" if is_timer_active => timer_end += increment,
+                    "increment" => timer_end = now + increment,
+                    "decrement" if is_timer_active => timer_end -= increment,
+                    "reset" => timer_end = now,
+                    _ => (),
+                }
             }
         }
     }

@@ -104,16 +104,17 @@ enum Status {
 }
 
 impl Status {
-    fn icon(&self) -> &str {
+    fn icon(&self) -> Cow<'static, str> {
         match self {
-            Status::Connected { .. } => "net_vpn",
-            Status::Disconnected => "net_wired",
-            Status::Error => "net_down",
+            Status::Connected { .. } => "net_vpn".into(),
+            Status::Disconnected => "net_wired".into(),
+            Status::Error => "net_down".into(),
         }
     }
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
+    let mut actions = api.get_actions().await?;
     api.set_default_actions(&[(MouseButton::Left, None, "toggle")])
         .await?;
 
@@ -136,7 +137,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                 country_flag,
             } => {
                 widget.set_values(map!(
-                        "icon" => Value::icon(api.get_icon(status.icon())?),
+                        "icon" => Value::icon(status.icon()),
                         "country" => Value::text(country.to_string()),
                         "flag" => Value::text(country_flag.to_string()),
 
@@ -146,14 +147,14 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
             }
             Status::Disconnected => {
                 widget.set_values(map!(
-                        "icon" => Value::icon(api.get_icon(status.icon())?),
+                        "icon" => Value::icon(status.icon()),
                 ));
                 widget.set_format(format_disconnected.clone());
                 config.state_disconnected
             }
             Status::Error => {
                 widget.set_values(map!(
-                        "icon" => Value::icon(api.get_icon(status.icon())?),
+                        "icon" => Value::icon(status.icon()),
                 ));
                 widget.set_format(format_disconnected.clone());
                 State::Critical
@@ -164,11 +165,10 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 
         select! {
             _ = sleep(config.interval.0) => (),
-            event = api.event() => {
-                match event {
-                    Action(a) if a == "toggle" => driver.toggle_connection(&status).await?,
-                    _ => (),
-                }
+            _ = api.wait_for_update_request() => (),
+            Some(action) = actions.recv() => match action.as_ref() {
+                "toggle" => driver.toggle_connection(&status).await?,
+                _ => (),
             }
         }
     }

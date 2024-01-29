@@ -44,16 +44,16 @@ pub struct Config {
     pub socket_path: ShellString,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let format = config.format.with_default(" $icon $running.eng(w:1) ")?;
     let socket_path = config.socket_path.expand()?;
 
     loop {
-        let status = api.recoverable(|| Status::new(&*socket_path)).await?;
+        let status = Status::new(&*socket_path).await?;
 
         let mut widget = Widget::new().with_format(format.clone());
         widget.set_values(map! {
-            "icon" => Value::icon(api.get_icon("docker")?),
+            "icon" => Value::icon("docker"),
             "total" =>   Value::number(status.total),
             "running" => Value::number(status.running),
             "paused" =>  Value::number(status.paused),

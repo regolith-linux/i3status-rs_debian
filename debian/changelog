@@ -1,3 +1,102 @@
+i3status-rs (0.32.1) mantic; urgency=medium
+
+  [ MaxVerevkin ]
+  * battery(sysfs): prefer `charge_now/charge_full` over `capacity`
+
+  [ Bryan Malyn ]
+  * Allow custom separator for rotating text
+  * Use graphemes instead of chars for StrFormatter
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * v0.31.6
+  * battery(sysfs): set power to none if it is zero
+
+  [ s0 ]
+  * keyboard_layout block: Add support for keyboard layout variant to xkbmap driver (#1904)
+
+  [ MaxVerevkin ]
+  * cargo update
+  * restart failed blocks after error_interval
+  * do 3 retries before displaying an error when doing web requests
+  * remove redundant line from cspell.yaml
+  * do not abort failed blocks
+  * keyboard_layout: split drivers into separate files
+  * maildir: support glob expansions
+  * depend on `glob` only if `maildir` is enabled
+  * update NEWS.md
+  * v0.30.7
+  * Temporarily switch to a fork of zbus
+  * update README
+
+  [ dependabot[bot] ]
+  * build(deps): bump openssl from 0.10.54 to 0.10.55
+  * use is_some_and(..) instead of map_or(false, ..)
+  * switch to upstream git zbus
+  * update deps (fixes build on latest nightly)
+  * update inotify code not to use deprecated fns
+  * update NEWS.md
+  * v0.31.8
+  * music: add a few debug!s
+  * music: improve debug prints
+  * music: add even more debug prints
+  * run cargo fmt on nightly
+  * run cargo clippy --fix
+  * music: temporarily dont use join! in Player::new()
+
+  [ Keenan Gugeler ]
+  * Make sysfs debug formatting consistent
+
+  [ MaxVerevkin ]
+  * avoid two unsafe {} blocks
+
+  [ Bryan Malyn ]
+  * Add script to verify that the default icons in `src/icons.rs` match `files/icons/*.toml`
+  * Remove unused default icons
+  * Add default net_cellular icons
+  * Update NEWS.md
+
+  [ Simon Thurston ]
+  * Add catppuccin themes
+
+  [ Bryan Malyn ]
+  * Add new theme photos, make md links relative
+  * Update NEWS.md
+  * Defer icon lookup until formatting
+  * Update NEWS.md
+  * v0.31.9
+
+  [ MaxVerevkin ]
+  * cargo update
+  * fix new clippy::format_collect
+
+  [ Bryan Malyn ]
+  * Update default memory format (#1932)
+  * Fix `.eng` formatter: inconsistent rounding (#1934)
+
+  [ Max Verevkin ]
+  * amd_gpu: select device automatically (#1935)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+
+  [ Max Verevkin ]
+  * pacman: create a checkup-db dir per user (#1938)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * update dependencies
+  * v0.32
+  * update README
+
+  [ Max Verevkin ]
+  * weather(metno): weathericon API was terminated, use pre-fetched data (#1940)
+
+  [ MaxVerevkin ]
+  * v0.32.1
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Mon, 29 Jan 2024 10:07:49 -0800
+
 i3status-rs (0.31.5) lunar; urgency=medium
 
   [ Jason Nader ]

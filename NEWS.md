@@ -1,3 +1,66 @@
+# i3status-rust 0.32.1
+
+### Bug Fixes and Improvements
+
+* Weather(metno): stop using an API which was terminated on August 31, 2023. The functionality of the block is not affected, but all i3status-rust versions older than 0.32.1 will be unable to use met.no weather service.
+
+# i3status-rust 0.32.0
+
+### Breaking Changes
+
+* Pacman block now creates checkup-db directory per user. This may break your scripts if they rely on the db path. Instead of `/tmp/checkup-db-i3statusrs` it is now `/tmp/checkup-db-i3statusrs-$USER`.
+
+### Bug Fixes and Improvements
+
+* Update default memory format.
+* Fix inconsistent rounding in `.eng()` formatter.
+* AMD GPU: select device automatically if `device` is not set.
+
+# i3status-rust 0.31.9
+
+### New Themes
+
+* `ctp-frappe`
+* `ctp-latte`
+* `ctp-macchiato`
+* `ctp-mocha`
+
+### Bug Fixes and Improvements
+
+* Add missing default net_cellular icon progression in the `"none"` icon set.
+* Removed unused default icons in the `"none"` icon set.
+* Defer icon lookup until formatting (see [#1774](https://github.com/greshake/i3status-rust/issues/1774))
+
+# i3status-rust 0.31.8
+
+### Bug Fixes and Improvements
+
+* Music block now functions properly when a player name contains `-`.
+
+# i3status-rust 0.31.7
+
+### New Blocks and Features
+
+* Maildir: Support glob expansions in `inboxes` (for example, this now works: `inboxes = ["~/Maildir/account1/*"]`).
+
+### Bug Fixes and Improvements
+
+* Battery(sysfs): Handle the case when charge rate is lower than current power usage.
+* Keyboard layout: Add support for keyboard layout variant to setxkbmap driver.
+* Blocks that make web requests will now do 3 retries before displaying an error.
+* Blocks can now recover from "Failed to render full text" errors.
+
+# i3status-rust 0.31.6
+
+### New Blocks and Features
+
+* Support custom separators in rotating text. Example: `format = " $title.str(max_w:30, rot_interval:0.2, rot_separator:' - ') |"`.
+
+### Bug Fixes and Improvements
+
+* Battery(sysfs): calculate battery level based on `{charge,energy}_{now,full}` instead of kernel-provided `capacity` (see [#1906](https://github.com/greshake/i3status-rust/issues/1906)).
+* Text formatting now operates on graphemes instead of "chars". This means that symbols like "a̐" are now processed correctly.
+
 # i3status-rust 0.31.5
 
 ### Bug Fixes and Improvements
@@ -132,7 +195,7 @@
 
 ### Packaging
 
-Manual page is no longer provided in the repo. To generate `man/i3status-rs.1` run `cargo xtask generate-manpage`. See [manual_install.md](https://github.com/greshake/i3status-rust/blob/master/doc/manual_install.md) for more details.
+Manual page is no longer provided in the repo. To generate `man/i3status-rs.1` run `cargo xtask generate-manpage`. See [manual_install.md](doc/manual_install.md) for more details.
 
 # i3status-rust 0.30.4
 

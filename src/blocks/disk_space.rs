@@ -85,12 +85,13 @@ pub struct Config {
     pub alert: f64,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
+    let mut actions = api.get_actions().await?;
     api.set_default_actions(&[(MouseButton::Left, None, "toggle_format")])
         .await?;
 
     let mut format = config.format.with_default(" $icon $available ")?;
-    let mut format_alt = match config.format_alt {
+    let mut format_alt = match &config.format_alt {
         Some(f) => Some(f.with_default("")?),
         None => None,
     };
@@ -133,7 +134,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
 
         let percentage = result / (total as f64) * 100.;
         widget.set_values(map! {
-            "icon" => Value::icon(api.get_icon("disk_drive")?),
+            "icon" => Value::icon("disk_drive"),
             "path" => Value::text(path.to_string()),
             "percentage" => Value::percents(percentage),
             "total" => Value::bytes(total as f64),
@@ -179,10 +180,10 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
         loop {
             select! {
                 _ = timer.tick() => break,
-                event = api.event() => match event {
-                    UpdateRequest => break,
-                    Action(a) if a == "toggle_format" => {
-                        if let Some(ref mut format_alt) = format_alt {
+                _ = api.wait_for_update_request() => break,
+                Some(action) = actions.recv() => match action.as_ref() {
+                    "toggle_format" => {
+                        if let Some(format_alt) = &mut format_alt {
                             std::mem::swap(format_alt, &mut format);
                             break;
                         }

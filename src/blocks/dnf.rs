@@ -55,7 +55,7 @@ pub struct Config {
     pub critical_updates_regex: Option<String>,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let format = config.format.with_default(" $icon $count.eng(w:1) ")?;
     let format_singular = config
         .format_singular
@@ -89,16 +89,16 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
             _ => format.clone(),
         });
         widget.set_values(map!(
-            "icon" => Value::icon(api.get_icon("update")?),
+            "icon" => Value::icon("update"),
             "count" => Value::number(count)
         ));
 
         let warning = warning_updates_regex
             .as_ref()
-            .map_or(false, |regex| has_matching_update(&updates, regex));
+            .is_some_and(|regex| has_matching_update(&updates, regex));
         let critical = critical_updates_regex
             .as_ref()
-            .map_or(false, |regex| has_matching_update(&updates, regex));
+            .is_some_and(|regex| has_matching_update(&updates, regex));
         widget.state = match count {
             0 => State::Idle,
             _ => {

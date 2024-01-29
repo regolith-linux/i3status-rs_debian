@@ -1,4 +1,4 @@
-pub use super::{BlockEvent::*, CommonApi};
+pub use super::{BlockAction, CommonApi};
 
 pub use crate::click::MouseButton;
 pub use crate::errors::*;
@@ -10,6 +10,8 @@ pub(crate) use crate::REQWEST_CLIENT;
 pub(crate) use crate::REQWEST_CLIENT_IPV4;
 
 pub use serde::Deserialize;
+
+pub use backon::{ExponentialBuilder, Retryable};
 
 pub use std::borrow::Cow;
 pub use std::collections::HashMap;

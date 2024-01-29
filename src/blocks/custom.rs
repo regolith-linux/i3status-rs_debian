@@ -122,7 +122,7 @@ async fn update_bar(
     stdout: &str,
     hide_when_empty: bool,
     json: bool,
-    api: &mut CommonApi,
+    api: &CommonApi,
     format: Format,
 ) -> Result<()> {
     let mut widget = Widget::new().with_format(format);
@@ -135,7 +135,7 @@ async fn update_bar(
                 text_empty = input.text.is_empty();
                 widget.set_values(map! {
                     "text" => Value::text(input.text),
-                    [if !input.icon.is_empty()] "icon" => Value::icon(api.get_icon(&input.icon)?),
+                    [if !input.icon.is_empty()] "icon" => Value::icon(input.icon),
                     [if let Some(t) = input.short_text] "short_text" => Value::text(t)
                 });
                 widget.state = input.state;
@@ -154,7 +154,7 @@ async fn update_bar(
     }
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     api.set_default_actions(&[(MouseButton::Left, None, "cycle")])
         .await?;
 
@@ -169,33 +169,29 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
     let mut file_updates: FileStream = match config.watch_files.as_slice() {
         [] => Box::pin(futures::stream::pending()),
         files => {
-            let mut notify = Inotify::init().error("Failed to start inotify")?;
+            let notify = Inotify::init().error("Failed to start inotify")?;
+            let mut watches = notify.watches();
             for file in files {
                 let file = file.expand()?;
-                notify
-                    .add_watch(&*file, WatchMask::MODIFY | WatchMask::CLOSE_WRITE)
+                watches
+                    .add(&*file, WatchMask::MODIFY | WatchMask::CLOSE_WRITE)
                     .error("Failed to add file watch")?;
             }
             Box::pin(
                 notify
-                    .event_stream([0; 1024])
+                    .into_event_stream([0; 1024])
                     .error("Failed to create event stream")?,
             )
         }
     };
 
-    // Choose the shell in this priority:
-    // 1) `shell` config option
-    // 2) `SHELL` environment variable
-    // 3) `"sh"`
     let shell = config
         .shell
+        .clone()
         .or_else(|| std::env::var("SHELL").ok())
         .unwrap_or_else(|| "sh".to_string());
 
     if config.persistent {
-        api.event_receiver.close();
-
         let mut process = Command::new(&shell)
             .args([
                 "-c",
@@ -206,6 +202,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
             ])
             .stdout(Stdio::piped())
             .stdin(Stdio::null())
+            .kill_on_drop(true)
             .spawn()
             .error("failed to run command")?;
 
@@ -229,14 +226,17 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                 &line,
                 config.hide_when_empty,
                 config.json,
-                &mut api,
+                api,
                 format.clone(),
             )
             .await?;
         }
     } else {
+        let mut actions = api.get_actions().await?;
+
         let mut cycle = config
             .cycle
+            .clone()
             .or_else(|| config.command.clone().map(|cmd| vec![cmd]))
             .error("either 'command' or 'cycle' must be specified")?
             .into_iter()
@@ -259,7 +259,7 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                 stdout,
                 config.hide_when_empty,
                 config.json,
-                &mut api,
+                api,
                 format.clone(),
             )
             .await?;
@@ -268,9 +268,9 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
                 select! {
                     _ = timer.tick() => break,
                     _ = file_updates.next() => break,
-                    event = api.event() => match event {
-                        UpdateRequest => break,
-                        Action(a) if a == "cycle" => {
+                    _ = api.wait_for_update_request() => break,
+                    Some(action) = actions.recv() => match action.as_ref() {
+                        "cycle" => {
                             cmd = cycle.next().unwrap();
                             break;
                         }

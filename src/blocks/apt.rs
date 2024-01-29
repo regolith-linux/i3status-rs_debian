@@ -70,7 +70,7 @@ pub struct Config {
     pub ignore_phased_updates: bool,
 }
 
-pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
+pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     let format = config.format.with_default(" $icon $count.eng(w:1) ")?;
     let format_singular = config
         .format_singular
@@ -133,15 +133,15 @@ pub async fn run(config: Config, mut api: CommonApi) -> Result<()> {
         });
         widget.set_values(map!(
             "count" => Value::number(count),
-            "icon" => Value::icon(api.get_icon("update")?)
+            "icon" => Value::icon("update"),
         ));
 
         let warning = warning_updates_regex
             .as_ref()
-            .map_or(false, |regex| has_matching_update(&updates, regex));
+            .is_some_and(|regex| has_matching_update(&updates, regex));
         let critical = critical_updates_regex
             .as_ref()
-            .map_or(false, |regex| has_matching_update(&updates, regex));
+            .is_some_and(|regex| has_matching_update(&updates, regex));
         widget.state = match count {
             0 => State::Idle,
             _ => {
@@ -222,7 +222,7 @@ async fn is_phased_update(config_path: &str, package_line: &str) -> Result<bool>
     )
     .error("Problem capturing apt-cache command output")?;
 
-    let phased_regex = regex!(r#".*\(phased (\d+)%\).*"#);
+    let phased_regex = regex!(r".*\(phased (\d+)%\).*");
     Ok(match phased_regex.captures(&output) {
         Some(matches) => &matches[1] != "100",
         None => false,
