@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use clap::Parser;
 
 use i3status_rs::config::Config;
@@ -5,6 +7,8 @@ use i3status_rs::errors::*;
 use i3status_rs::escape::Escaped;
 use i3status_rs::widget::{State, Widget};
 use i3status_rs::{protocol, util, BarState};
+
+const STDIN_FILE_DESIGNATOR: &str = "-";
 
 fn main() {
     env_logger::init();
@@ -22,9 +26,27 @@ fn main() {
         .build()
         .unwrap()
         .block_on(async move {
-            let config_path = util::find_file(&args.config, None, Some("toml"))
-                .or_error(|| format!("Configuration file '{}' not found", args.config))?;
-            let mut config: Config = util::deserialize_toml_file(&config_path)?;
+            let mut config: Config = match args.config.as_str() {
+                STDIN_FILE_DESIGNATOR => { // read from stdin
+                    let mut config_str = String::new();
+
+                    let size = std::io::stdin().read_to_string(&mut config_str)
+                    .or_error(|| format!("Configuration file could not be read from stdin"))?;
+
+                    if size == 0 {                        
+                        return Err(i3status_rs::errors::Error { kind: ErrorKind::Config, message: None, cause: None, block: None });
+                    }
+
+                    util::deserialize_toml(&config_str, None)?
+                }, 
+                _ => { // read from file path
+                    let config_path = util::find_file(&args.config, None, Some("toml"))
+                    .or_error(|| format!("Configuration file '{}' not found", args.config))?;
+                    let config_str = util::read_file(&config_path).await.or_error(|| format!("Configuration file '{}' not found", args.config))?;
+                    util::deserialize_toml(&config_str, Some(&config_path))?
+                }
+            };
+
             let blocks = std::mem::take(&mut config.blocks);
             let mut bar = BarState::new(config);
             for block_config in blocks {
