@@ -27,22 +27,34 @@ fn main() {
         .unwrap()
         .block_on(async move {
             let mut config: Config = match args.config.as_str() {
-                STDIN_FILE_DESIGNATOR => { // read from stdin
+                STDIN_FILE_DESIGNATOR => {
+                    // read from stdin
                     let mut config_str = String::new();
 
-                    let size = std::io::stdin().read_to_string(&mut config_str)
-                    .or_error(|| format!("Configuration file could not be read from stdin"))?;
+                    let size = std::io::stdin()
+                        .read_to_string(&mut config_str)
+                        .or_error(|| {
+                            "Configuration file could not be read from stdin".to_string()
+                        })?;
 
-                    if size == 0 {                        
-                        return Err(i3status_rs::errors::Error { kind: ErrorKind::Config, message: None, cause: None, block: None });
+                    if size == 0 {
+                        return Err(i3status_rs::errors::Error {
+                            kind: ErrorKind::Config,
+                            message: None,
+                            cause: None,
+                            block: None,
+                        });
                     }
 
                     util::deserialize_toml(&config_str, None)?
-                }, 
-                _ => { // read from file path
+                }
+                _ => {
+                    // read from file path
                     let config_path = util::find_file(&args.config, None, Some("toml"))
-                    .or_error(|| format!("Configuration file '{}' not found", args.config))?;
-                    let config_str = util::read_file(&config_path).await.or_error(|| format!("Configuration file '{}' not found", args.config))?;
+                        .or_error(|| format!("Configuration file '{}' not found", args.config))?;
+                    let config_str = util::read_file(&config_path)
+                        .await
+                        .or_error(|| format!("Configuration file '{}' not found", args.config))?;
                     util::deserialize_toml(&config_str, Some(&config_path))?
                 }
             };
