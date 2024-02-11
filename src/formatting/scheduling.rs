@@ -60,9 +60,8 @@ pub fn manage_widgets_updates() -> (UnboundedSender<(usize, Vec<u64>)>, BoxedStr
                 }
             }
         },
-    )
-    .boxed();
-    (intervals_tx, stream)
+    );
+    (intervals_tx, Box::pin(stream.fuse()))
 }
 
 fn single_block_next_update(intervals: &[u64], time: u64, last_update: u64) -> u64 {

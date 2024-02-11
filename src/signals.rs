@@ -16,11 +16,10 @@ pub enum Signal {
 pub fn signals_stream() -> BoxedStream<Signal> {
     let (sigmin, sigmax) = (SIGRTMIN(), SIGRTMAX());
     let signals = Signals::new((sigmin..sigmax).chain([SIGUSR1, SIGUSR2])).unwrap();
-    signals
-        .map(move |signal| match signal {
-            SIGUSR1 => Signal::Usr1,
-            SIGUSR2 => Signal::Usr2,
-            x => Signal::Custom(x - sigmin),
-        })
-        .boxed()
+    let stream = signals.map(move |signal| match signal {
+        SIGUSR1 => Signal::Usr1,
+        SIGUSR2 => Signal::Usr2,
+        x => Signal::Custom(x - sigmin),
+    });
+    Box::pin(stream.fuse())
 }

@@ -31,8 +31,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::stream::{FuturesUnordered, StreamExt};
-use futures::Stream;
+use futures::stream::{FusedStream, FuturesUnordered, StreamExt};
 use once_cell::sync::Lazy;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Notify};
@@ -70,7 +69,7 @@ static REQWEST_CLIENT_IPV4: Lazy<reqwest::Client> = Lazy::new(|| {
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
-type BoxedStream<T> = Pin<Box<dyn Stream<Item = T>>>;
+type BoxedStream<T> = Pin<Box<dyn FusedStream<Item = T>>>;
 
 type WidgetUpdatesSender = mpsc::UnboundedSender<(usize, Vec<u64>)>;
 

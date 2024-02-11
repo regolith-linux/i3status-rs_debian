@@ -23,7 +23,7 @@ fn unprocessed_events_stream(invert_scrolling: bool) -> BoxedStream<I3BarEvent> 
     let stdin = unsafe { File::from_raw_fd(0) };
     let lines = BufReader::new(stdin).lines();
 
-    futures::stream::unfold(lines, move |mut lines| async move {
+    let stream = futures::stream::unfold(lines, move |mut lines| async move {
         loop {
             // Take only the valid JSON object between curly braces (cut off leading bracket, commas and whitespace)
             let line = lines.next_line().await.ok().flatten()?;
@@ -69,8 +69,9 @@ fn unprocessed_events_stream(invert_scrolling: bool) -> BoxedStream<I3BarEvent> 
 
             break Some((event, lines));
         }
-    })
-    .boxed_local()
+    });
+    Box::pin(stream.fuse())
+
 }
 
 pub fn events_stream(
@@ -78,7 +79,7 @@ pub fn events_stream(
     double_click_delay: Duration,
 ) -> BoxedStream<I3BarEvent> {
     let events = unprocessed_events_stream(invert_scrolling);
-    futures::stream::unfold((events, None), move |(mut events, pending)| async move {
+    let stream = futures::stream::unfold((events, None), move |(mut events, pending)| async move {
         if let Some(pending) = pending {
             return Some((pending, (events, None)));
         }
@@ -98,6 +99,6 @@ pub fn events_stream(
         }
 
         Some((event, (events, None)))
-    })
-    .boxed_local()
+    });
+    Box::pin(stream.fuse())
 }
