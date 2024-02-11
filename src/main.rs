@@ -7,6 +7,7 @@ use i3status_rs::errors::*;
 use i3status_rs::escape::Escaped;
 use i3status_rs::widget::{State, Widget};
 use i3status_rs::{protocol, util, BarState};
+use tokio::io::{stdin, AsyncReadExt};
 
 const STDIN_FILE_DESIGNATOR: &str = "-";
 
@@ -31,8 +32,9 @@ fn main() {
                     // read from stdin
                     let mut config_str = String::new();
 
-                    let size = std::io::stdin()
+                    let size = stdin()
                         .read_to_string(&mut config_str)
+                        .await
                         .or_error(|| {
                             "Configuration file could not be read from stdin".to_string()
                         })?;
