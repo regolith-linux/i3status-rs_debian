@@ -14,11 +14,12 @@ unit = "GB"
 alert = 50
 warning = 40
 
-[[block]]
-block = "memory"
-display_type = "memory"
-format_mem = "{mem_used_percents}"
-format_swap = "{swap_used_percents}"
+# Uncomment below to enable battery
+# [[block]]
+# block = "memory"
+# display_type = "memory"
+# format_mem = "{mem_used_percents}"
+# format_swap = "{swap_used_percents}"
 
 [[block]]
 block = "battery"
