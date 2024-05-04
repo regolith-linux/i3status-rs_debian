@@ -1,3 +1,10 @@
+i3status-rs (0.22.1-1) focal; urgency=medium
+
+  * fix: disable battery to avoid global error on bar on targets without batteries on jammy
+  * fix: really disable the battery
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Sat, 04 May 2024 08:35:05 -0700
+
 i3status-rs (0.22.0-1) jammy; urgency=medium
 
   [ Soumya Ranjan patnaik ]
