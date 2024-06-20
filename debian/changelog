@@ -1,3 +1,225 @@
+i3status-rs (0.33.1) jammy; urgency=medium
+
+  [ Soumya Ranjan Patnaik ]
+  * feat: disable battery block by default in stock config
+
+  [ MaxVerevkin ]
+  * make met_no::Service::new plain (not async) fn
+
+  [ Bryan Malyn ]
+  * Add weather icons for night
+  * Update NEWS.md
+
+  [ Martin Matous ]
+  * docs(examples): add maintainer helper blocks (#1943)
+
+  [ Bryan Malyn ]
+  * Bump actions/checkout to v4
+  * Add new emoji icon set 🙂
+  * Update NEWS.md
+  * Fix formatting in `src/blocks/bluetooth.rs`
+
+  [ Max Verevkin ]
+  * switch to std::sync::mpsc from crossbeam-channel (#1936)
+
+  [ MaxVerevkin ]
+  * Fix "update = true" click event handling for some blocks (e.g. pacman)
+  * update NEWS.md
+  * v0.32.2
+  * update docs in blocks.rs
+  * update toml and neli-wifi
+  * remove Option which is always Some
+  * fail earlier while deserializing a disabled block
+  * use unbounded channel for block requests
+
+  [ Bryan Malyn ]
+  * Fix typo pre-commit config
+  * Use lat/lon for Open Weather Map & add `zip` option (#1948)
+
+  [ Max Verevkin ]
+  * Simplify some error handling and make it more structured (#1946)
+  * xrandr: support multiple outputs (#1949)
+
+  [ Bryan Malyn ]
+  * Add weather forecast (#1944)
+  * Use autolocate city for met_no location (#1950)
+
+  [ Max Verevkin ]
+  * Fail if click handler refers to unknown button (#1951)
+
+  [ MaxVerevkin ]
+  * remove unwrap_or_break macro
+
+  [ Max Verevkin ]
+  * time: remove tzset() call (#1952)
+
+  [ MaxVerevkin ]
+  * formatting: use Arc<[T]> instead of Arc<Vec<T>>
+
+  [ dependabot[bot] ]
+  * build(deps): bump rustix from 0.37.23 to 0.37.25 (#1954)
+
+  [ Max Verevkin ]
+  * music: add format_alt (#1960)
+
+  [ zheltikov ]
+  * blocks/apt: Added config option `ignore_updates_regex` to filter the list of updates (#1967)
+
+  [ HKalbasi ]
+  * Add basic support for non Gregorian calendars (#1968)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * v0.32.3
+
+  [ dependabot[bot] ]
+  * build(deps): bump openssl from 0.10.57 to 0.10.60 (#1970)
+
+  [ Tim Siegel ]
+  * blocks/focused_window: Close code block in markdown doc (#1976)
+  * blocks/toggle: Allow customizing State when on/off (#1974)
+
+  [ Charles Dong ]
+  * disk_space: Add binary unit support for `alert_unit` (#1977)
+
+  [ MaxVerevkin ]
+  * disk_space: use Prefix::apply
+  * fix clippy::get_first
+  * disk_space: update docs
+
+  [ Ian Becker ]
+  * docs(readme): update home-manager options link (#1978)
+
+  [ MaxVerevkin ]
+  * update wayrs to v1
+  * rework kdeconnect block
+  * install.sh: add 'set -x'
+
+  [ Ishan Grover ]
+  * blocks/cpu: Add critical/warning/info values in configuration (#1983)
+
+  [ Bryan Malyn ]
+  * Update NEWS.md
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+
+  [ Ishan Grover ]
+  * keyboard_layout: Add xkbswitch support (#1985)
+
+  [ MaxVerevkin ]
+  * remove unnecessary allow(deprecated)
+  * CI: drop actions-rs dependency
+  * CI: update github-pages-deploy-action
+  * CI: fix github-pages-deploy-action version
+  * CI: fix github-pages-deploy-action version again
+  * update env_logger and cargo update
+
+  [ Ishan Grover ]
+  * Combine `apt`, `pacman` & `dnf` block to `packages` block (#1988)
+
+  [ MaxVerevkin ]
+  * packages: fail if using aur without aur_command
+  * packages: automatically detect dnf in format
+
+  [ Regolith Linux ]
+  * fix: specify fileset under copyright
+
+  [ MaxVerevkin ]
+  * fix clippy lints
+
+  [ Bryan Malyn ]
+  * Cargo updates (#1995)
+
+  [ Max Verevkin ]
+  * default theme to "plain" even if [theme] section is absent (#1993)
+
+  [ Bryan Malyn ]
+  * Update pre-commit hooks
+  * Fix trailing whitespace
+  * Add v4l privacy monitor driver
+  * Add pipewire privacy driver
+  * Allow multiple privacy drivers to be used
+  * Improve output in privacy block
+  * Update NEWS.md
+
+  [ dependabot[bot] ]
+  * build(deps): bump shlex from 1.2.0 to 1.3.0 (#1999)
+
+  [ Max Verevkin ]
+  * config: allow widget=<regex> in click handlers (#1961)
+
+  [ MaxVerevkin ]
+  * hueshift: use pkill instead of killall
+
+  [ Max Verevkin ]
+  * drop serde_with dependency (#2001)
+
+  [ MaxVerevkin ]
+  * v0.33.0
+
+  [ Karthik Prakash ]
+  * time: adjust phase to snap seconds to the interval (#2005)
+
+  [ Bryan Malyn ]
+  * Only doc features that feature-gate blocks (#2010)
+
+  [ MaxVerevkin ]
+  * update zbus to v4
+  * fix deprecation worning
+  * update nix to 0.28
+  * battery(sysfs): do not read model_name twice for no reason
+  * fix clippy::assigning_clones
+
+  [ Bryan Malyn ]
+  * privacy[pipewire]: Fix status bar freezing (#2024)
+  * Escape " in code blocks, replace &vert; with \| (#2021)
+  * Change device scan method for v4l privacy driver (#2009)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+
+  [ Bryan Malyn ]
+  * Split formatters into modules (#2026)
+
+  [ MaxVerevkin ]
+  * pulseaudio,pipewire: use tokio::sync::Notify instead of channels
+  * privacy(pipewire): remove initial roundtrip
+
+  [ Bryan Malyn ]
+  * Allow empty string as an arg value (#2027)
+  * music: Allow asymmetric seek steps (#2019)
+  * formatter[datetime] allow clippy::unnecessary_wraps
+
+  [ lali ]
+  * blocks/memory: add zram, zswap support (#2018)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+
+  [ Jason Nader ]
+  * Fix device_id in kdeconnect block (#2033)
+
+  [ Heitor ]
+  * amd_gpu: better error message on device not found (#2035)
+
+  [ dependabot[bot] ]
+  * build(deps): bump h2 from 0.3.24 to 0.3.26 (#2038)
+
+  [ Bryan Malyn ]
+  * block[music] fix cur description (#2037)
+
+  [ Max Verevkin ]
+  * use tokio OnceCell instead of async-once-cell (#2039)
+  * map! macro: add @extend mode to extend an existing map (#2040)
+
+  [ MaxVerevkin ]
+  * update NEWS.md
+  * update NEWS.md
+  * v0.33.1
+
+ -- Soumya Ranjan Patniak <soumyaranjan1812@gmail.com>  Thu, 20 Jun 2024 11:27:13 +0530
+
 i3status-rs (0.32.1) mantic; urgency=medium
 
   [ MaxVerevkin ]
