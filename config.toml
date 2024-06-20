@@ -22,12 +22,13 @@ block = "memory"
 format = " $icon $mem_total_used_percents.eng(w:2) "
 format_alt = " $icon_swap $swap_used_percents.eng(w:2) "
 
-[[block]]
-block = "battery"
-format = " $icon\u2009 $percentage "
-missing_format = ""
-device = "DisplayDevice"
-driver = "upower"
+# Uncomment below to enable battery
+# [[block]]
+# block = "battery"
+# format = " $icon\u2009 $percentage "
+# missing_format = ""
+# device = "DisplayDevice"
+# driver = "upower"
 
 [[block]]
 block = "rofication"
