@@ -96,7 +96,6 @@ where
         .or_error(|| format!("Failed to read file: {}", path.display()))?;
 
     toml::from_str(&contents).map_err(|err| {
-        #[allow(deprecated)]
         let location_msg = err
             .span()
             .map(|span| {
@@ -139,21 +138,27 @@ pub async fn has_command(command: &str) -> Result<bool> {
 ///
 /// ```ignore
 /// let opt = Some(1);
-/// let map: HashMap<&'static str, String> = map! {
+/// let m: HashMap<&'static str, String> = map! {
 ///     "key" => "value",
 ///     [if true] "hello" => "world",
 ///     [if let Some(x) = opt] "opt" => x.to_string(),
 /// };
+/// map! { @extend m
+///     "new key" => "new value",
+///     "one" => "more",
+/// }
 /// ```
 #[macro_export]
 macro_rules! map {
-    ($( $([$($cond_tokens:tt)*])? $key:literal => $value:expr ),* $(,)?) => {{
-        #[allow(unused_mut)]
-        let mut m = ::std::collections::HashMap::new();
+    (@extend $map:ident $( $([$($cond_tokens:tt)*])? $key:literal => $value:expr ),* $(,)?) => {{
         $(
-        map!(@insert m, $key, $value $(,$($cond_tokens)*)?);
+        map!(@insert $map, $key, $value $(,$($cond_tokens)*)?);
         )*
-        m
+    }};
+    (@extend $map:ident $( $key:expr => $value:expr ),* $(,)?) => {{
+        $(
+        map!(@insert $map, $key, $value);
+        )*
     }};
     (@insert $map:ident, $key:expr, $value:expr) => {{
         $map.insert($key.into(), $value.into());
@@ -167,6 +172,12 @@ macro_rules! map {
         if let $pat = $match_on {
         $map.insert($key.into(), $value.into());
         }
+    }};
+    ($($tt:tt)*) => {{
+        #[allow(unused_mut)]
+        let mut m = ::std::collections::HashMap::new();
+        map!(@extend m $($tt)*);
+        m
     }};
 }
 
@@ -234,7 +245,7 @@ pub fn country_flag_from_iso_code(country_code: &str) -> String {
     String::from_utf8(vec![0xf0, 0x9f, 0x87, b1, 0xf0, 0x9f, 0x87, b2]).unwrap()
 }
 
-/// A shorcut for `Default::default()`
+/// A shortcut for `Default::default()`
 /// See <https://github.com/rust-lang/rust/issues/73014>
 #[inline]
 pub fn default<T: Default>() -> T {

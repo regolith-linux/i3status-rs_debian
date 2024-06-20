@@ -34,7 +34,7 @@
 //! `max_width` or `max_w` | if text is longer it will be truncated            | Infinity
 //! `width` or `w`         | Text will be exactly this length by padding or truncating as needed | N/A
 //! `rot_interval`         | if text is longer than `max_width` it will be rotated every `rot_interval` seconds, if set | None
-//! `rot_separator`        | if text is longer than `max_width` it will be rotated with this seporator | <code>"\|"</code>
+//! `rot_separator`        | if text is longer than `max_width` it will be rotated with this seporator | <code>\"\|\"</code>
 //!
 //! Note: width just changes the values of both min_width and max_width to be the same. Use width
 //! if you want the values to be the same, or the other two otherwise. Don't mix width with
@@ -106,7 +106,6 @@ pub mod value;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::config::SharedConfig;
 use crate::errors::*;
@@ -115,10 +114,20 @@ use value::Value;
 
 pub type Values = HashMap<Cow<'static, str>, Value>;
 
+#[derive(Debug, thiserror::Error)]
+pub enum FormatError {
+    #[error("Placeholder '{0}' not found")]
+    PlaceholderNotFound(String),
+    #[error("{} cannot be formatted with '{}' formatter", .ty, .fmt)]
+    IncompatibleFormatter { ty: &'static str, fmt: &'static str },
+    #[error(transparent)]
+    Other(#[from] Error),
+}
+
 #[derive(Debug, Clone)]
 pub struct Format {
-    full: Arc<FormatTemplate>,
-    short: Arc<FormatTemplate>,
+    full: FormatTemplate,
+    short: FormatTemplate,
     intervals: Vec<u64>,
 }
 

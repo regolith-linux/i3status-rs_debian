@@ -53,9 +53,8 @@ pub struct Config {
 }
 
 pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
-    let mut actions = api.get_actions().await?;
-    api.set_default_actions(&[(MouseButton::Left, None, "toggle_format")])
-        .await?;
+    let mut actions = api.get_actions()?;
+    api.set_default_actions(&[(MouseButton::Left, None, "toggle_format")])?;
 
     let mut format = config.format.with_default(" $icon $utilization ")?;
     let mut format_alt = match &config.format_alt {
@@ -64,7 +63,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     };
 
     let device = match &config.device {
-        Some(name) => Device::new(name),
+        Some(name) => Device::new(name)?,
         None => Device::default_card()
             .await
             .error("failed to get default GPU")?
@@ -91,7 +90,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
             _ => State::Idle,
         };
 
-        api.set_widget(widget).await?;
+        api.set_widget(widget)?;
 
         loop {
             select! {
@@ -122,9 +121,13 @@ struct GpuInfo {
 }
 
 impl Device {
-    fn new(name: &str) -> Self {
-        Self {
-            path: PathBuf::from(format!("/sys/class/drm/{name}/device")),
+    fn new(name: &str) -> Result<Self, Error> {
+        let path = PathBuf::from(format!("/sys/class/drm/{name}/device"));
+
+        if !path.exists() {
+            Err(Error::new(format!("Device {name} not found")))
+        } else {
+            Ok(Self { path })
         }
     }
 
@@ -175,5 +178,16 @@ impl Device {
                 .await
                 .error("Failed to read mem_info_vram_used")?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_non_existing_gpu_device() {
+        let device = Device::new("/nope");
+        assert!(device.is_err());
     }
 }

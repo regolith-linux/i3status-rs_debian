@@ -97,12 +97,19 @@ impl Default for Icons {
             "volume_muted" => "VOL MUTED",
             "microphone" => "MIC",
             "microphone_muted" => "MIC MUTED",
+            "weather_clouds_night" => "CLOUDY",
             "weather_clouds" => "CLOUDY",
             "weather_default" => "WEATHER",
+            "weather_fog_night" => "FOG",
+            "weather_fog" => "FOG",
+            "weather_moon" => "MOONY",
+            "weather_rain_night" => "RAIN",
             "weather_rain" => "RAIN",
             "weather_snow" => "SNOW",
             "weather_sun" => "SUNNY",
+            "weather_thunder_night" => "STORM",
             "weather_thunder" => "STORM",
+            "webcam" => "CAM",
             "xrandr" => "SCREEN"
         })
     }

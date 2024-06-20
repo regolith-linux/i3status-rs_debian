@@ -42,7 +42,6 @@
 //!
 
 use super::prelude::*;
-use zbus::dbus_proxy;
 use zbus::PropertyStream;
 
 #[derive(Deserialize, Debug, Default)]
@@ -91,7 +90,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
             "service" =>Value::text(config.service.clone()),
         });
 
-        api.set_widget(widget).await?;
+        api.set_widget(widget)?;
 
         driver.wait_for_change().await?;
     }
@@ -163,11 +162,11 @@ impl Driver for SystemdDriver {
     }
 }
 
-#[dbus_proxy(
+#[zbus::proxy(
     interface = "org.freedesktop.systemd1.Unit",
     default_service = "org.freedesktop.systemd1"
 )]
 trait Unit {
-    #[dbus_proxy(property)]
+    #[zbus(property)]
     fn active_state(&self) -> zbus::Result<String>;
 }

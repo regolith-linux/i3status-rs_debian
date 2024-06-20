@@ -16,7 +16,7 @@
 //!
 //! Key | Values | Default
 //! ----|--------|--------
-//! `format` | A string to customise the output of this block. | <code>"{ $icon&vert;}{ $text.pango-str()&vert;} "</code>
+//! `format` | A string to customise the output of this block. | <code>\"{ $icon\|}{ $text.pango-str()\|} \"</code>
 //!
 //! Placeholder  | Value                                  | Type   | Unit
 //! -------------|-------------------------------------------------------------------|--------|---------------
@@ -54,11 +54,11 @@
 
 use super::prelude::*;
 use std::env;
-use zbus::{dbus_interface, fdo};
+use zbus::fdo;
 
 // Share DBus connection between multiple block instances
-static DBUS_CONNECTION: async_once_cell::OnceCell<Result<zbus::Connection>> =
-    async_once_cell::OnceCell::new();
+static DBUS_CONNECTION: tokio::sync::OnceCell<Result<zbus::Connection>> =
+    tokio::sync::OnceCell::const_new();
 
 const DBUS_NAME: &str = "rs.i3status";
 
@@ -86,7 +86,7 @@ fn block_values(block: &Block) -> HashMap<Cow<'static, str>, Value> {
     }
 }
 
-#[dbus_interface(name = "rs.i3status.custom")]
+#[zbus::interface(name = "rs.i3status.custom")]
 impl Block {
     async fn set_icon(&mut self, icon: &str) -> fdo::Result<()> {
         self.icon = if icon.is_empty() {
@@ -95,7 +95,7 @@ impl Block {
             Some(icon.to_string())
         };
         self.widget.set_values(block_values(self));
-        self.api.set_widget(self.widget.clone()).await?;
+        self.api.set_widget(self.widget.clone())?;
         Ok(())
     }
 
@@ -103,7 +103,7 @@ impl Block {
         self.text = Some(full);
         self.short_text = Some(short);
         self.widget.set_values(block_values(self));
-        self.api.set_widget(self.widget.clone()).await?;
+        self.api.set_widget(self.widget.clone())?;
         Ok(())
     }
 
@@ -116,7 +116,7 @@ impl Block {
             "critical" => State::Critical,
             _ => return Err(Error::new(format!("'{state}' is not a valid state")).into()),
         };
-        self.api.set_widget(self.widget.clone()).await?;
+        self.api.set_widget(self.widget.clone())?;
         Ok(())
     }
 }
@@ -128,7 +128,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     )?);
 
     let dbus_conn = DBUS_CONNECTION
-        .get_or_init(dbus_conn())
+        .get_or_init(dbus_conn)
         .await
         .as_ref()
         .map_err(Clone::clone)?;

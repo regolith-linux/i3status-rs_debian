@@ -56,13 +56,12 @@ pub struct Config {
 }
 
 pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
-    let mut actions = api.get_actions().await?;
+    let mut actions = api.get_actions()?;
     api.set_default_actions(&[
         (MouseButton::Left, None, "cycle_outputs"),
         (MouseButton::WheelUp, None, "brightness_up"),
         (MouseButton::WheelDown, None, "brightness_down"),
-    ])
-    .await?;
+    ])?;
 
     let format = config
         .format
@@ -91,7 +90,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
                     "res_icon" => Value::icon("resolution"),
                 });
             }
-            api.set_widget(widget).await?;
+            api.set_widget(widget)?;
 
             select! {
                 _ = timer.tick() => break,
@@ -136,15 +135,6 @@ impl Monitor {
     }
 }
 
-macro_rules! unwrap_or_break {
-    ($e: expr) => {
-        match $e {
-            Some(e) => e,
-            None => break,
-        }
-    };
-}
-
 async fn get_monitors() -> Result<Vec<Monitor>> {
     let mut monitors = Vec::new();
 
@@ -175,19 +165,20 @@ async fn get_monitors() -> Result<Vec<Monitor>> {
 
     let mut it = monitors_info.lines().filter(|line| regex.is_match(line));
 
-    #[allow(clippy::while_let_loop)]
-    loop {
-        let line1 = unwrap_or_break!(it.next());
-        let line2 = unwrap_or_break!(it.next());
-
-        let mut tokens = line1.split_ascii_whitespace();
+    while let (Some(line1), Some(line2)) = (it.next(), it.next()) {
+        let mut tokens = line1.split_ascii_whitespace().peekable();
         let name = tokens.next().error("Failed to parse xrandr output")?.into();
         let _ = tokens.next();
+
+        // The output may be "<name> connected <resolution>" or "<name> connected primary <resolution>"
+        let _ = tokens.next_if_eq(&"primary");
+
         let resolution = tokens
             .next()
             .and_then(|x| x.split('+').next())
             .error("Failed to parse xrandr output")?
             .into();
+
         let brightness = (line2
             .split(':')
             .nth(1)

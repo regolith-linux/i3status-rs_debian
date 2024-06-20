@@ -4,7 +4,7 @@
 //!
 //! Key | Values | Default
 //! ----|--------|--------
-//! `format` | A string to customise the output of this block. See below for available placeholders. | <code>" $icon {$minutes:$seconds &vert;}"</code>
+//! `format` | A string to customise the output of this block. See below for available placeholders. | <code>\" $icon {$minutes:$seconds \|}\"</code>
 //! `increment` | The numbers of seconds to add each time the block is clicked. | 30
 //! `done_cmd` | A command to run in `sh` when timer finishes. | None
 //!
@@ -48,21 +48,21 @@ pub struct Config {
 }
 
 pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
-    let mut actions = api.get_actions().await?;
+    let mut actions = api.get_actions()?;
     api.set_default_actions(&[
         (MouseButton::Left, None, "increment"),
         (MouseButton::WheelUp, None, "increment"),
         (MouseButton::WheelDown, None, "decrement"),
         (MouseButton::Right, None, "reset"),
-    ])
-    .await?;
+    ])?;
 
     let interval: Seconds = 1.into();
     let mut timer = interval.timer();
 
     let format = config.format.with_default(" $icon {$minutes:$seconds |}")?;
 
-    let increment = Duration::seconds(config.increment.unwrap_or(30));
+    let increment =
+        Duration::try_seconds(config.increment.unwrap_or(30)).error("invalid increment value")?;
     let mut timer_end = Utc::now();
 
     let mut timer_was_active = false;
@@ -97,7 +97,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
             [if is_timer_active] "seconds" => Value::text(format!("{seconds:02}")),
         ));
 
-        api.set_widget(widget).await?;
+        api.set_widget(widget)?;
 
         select! {
             _ = timer.tick(), if is_timer_active => (),

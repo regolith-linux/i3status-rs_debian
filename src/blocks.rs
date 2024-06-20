@@ -4,7 +4,7 @@
 //!
 //! Key | Description | Default
 //! ----|-------------|----------
-//! `block` | Name of the i3status-rs block you want to use. See `Blocks` below for valid block names. Must be the first field of a block config. | -
+//! `block` | Name of the i3status-rs block you want to use. See [modules](#modules) below for valid block names. | -
 //! `signal` | Signal value that causes an update for this block with `0` corresponding to `-SIGRTMIN+0` and the largest value being `-SIGRTMAX` | None
 //! `if_command` | Only display the block if the supplied command returns 0 on startup. | None
 //! `merge_with_next` | If true this will group the block with the next one, so rendering such as alternating_tint will apply to the whole group | `false`
@@ -20,8 +20,8 @@
 //!
 //! Key | Description | Default
 //! ----|-------------|----------
-//! `button` | `left`, `middle`, `right`, `up`, `down`, `forward`, `back` or [`double_left`](https://greshake.github.io/i3status-rust/i3status_rs/click/enum.MouseButton.html). | -
-//! `widget` | To which part of the block this entry applies | None
+//! `button` | `left`, `middle`, `right`, `up`, `down`, `forward`, `back` or [`double_left`](MouseButton). | -
+//! `widget` | To which part of the block this entry applies (accepts regex) | `"block"`
 //! `cmd` | Command to run when the mouse button event is detected. | None
 //! `action` | Which block action to trigger | None
 //! `sync` | Whether to wait for command to exit or not. | `false`
@@ -29,8 +29,8 @@
 
 mod prelude;
 
-use crate::BoxedFuture;
 use futures::future::FutureExt;
+use futures::stream::FuturesUnordered;
 use serde::de::{self, Deserialize};
 use tokio::sync::{mpsc, Notify};
 
@@ -41,15 +41,20 @@ use std::time::Duration;
 use crate::click::MouseButton;
 use crate::errors::*;
 use crate::widget::Widget;
-use crate::{Request, RequestCmd};
+use crate::{BoxedFuture, Request, RequestCmd};
 
 macro_rules! define_blocks {
     {
-        $( $(#[cfg(feature = $feat: literal)])? $block: ident $(,)? )*
+        $(
+            $(#[cfg(feature = $feat: literal)])?
+            $(#[deprecated($($dep_k: ident = $dep_v: literal),+)])?
+            $block: ident $(,)?
+        )*
     } => {
         $(
             $(#[cfg(feature = $feat)])?
             $(#[cfg_attr(docsrs, doc(cfg(feature = $feat)))])?
+            $(#[deprecated($($dep_k = $dep_v),+)])?
             pub mod $block;
         )*
 
@@ -58,9 +63,10 @@ macro_rules! define_blocks {
             $(
                 $(#[cfg(feature = $feat)])?
                 #[allow(non_camel_case_types)]
+                #[allow(deprecated)]
                 $block($block::Config),
             )*
-            Err(Option<&'static str>, Error),
+            Err(&'static str, Error),
         }
 
         impl BlockConfig {
@@ -70,34 +76,32 @@ macro_rules! define_blocks {
                         $(#[cfg(feature = $feat)])?
                         Self::$block { .. } => stringify!($block),
                     )*
-                    Self::Err(Some(name), _err) => name,
-                    Self::Err(None, _err) => "???",
+                    Self::Err(name, _err) => name,
                 }
             }
 
-            pub fn run(self, api: CommonApi) -> BlockFuture {
-                let id = api.id;
+            pub fn spawn(self, api: CommonApi, futures: &mut FuturesUnordered<BoxedFuture<()>>) {
                 match self {
                     $(
                         $(#[cfg(feature = $feat)])?
-                        Self::$block(config) => async move {
+                        #[allow(deprecated)]
+                        Self::$block(config) => futures.push(async move {
                             while let Err(err) = $block::run(&config, &api).await {
-                                api.set_error(err).await?;
+                                if api.set_error(err).is_err() {
+                                    return;
+                                }
                                 tokio::select! {
                                     _ = tokio::time::sleep(api.error_interval) => (),
                                     _ = api.wait_for_update_request() => (),
                                 }
                             }
-                            Ok(())
-                        }.boxed_local(),
+                        }.boxed_local()),
                     )*
-                    Self::Err(name, err) => {
-                        std::future::ready(Err(Error {
-                            kind: ErrorKind::Config,
-                            message: None,
+                    Self::Err(_name, err) => {
+                        let _ = api.set_error(Error {
+                            message: Some("Configuration error".into()),
                             cause: Some(Arc::new(err)),
-                            block: Some((name.unwrap_or("???"), id)),
-                        })).boxed_local()
+                        });
                     },
                 }
             }
@@ -117,19 +121,18 @@ macro_rules! define_blocks {
                 match block_name {
                     $(
                         $(#[cfg(feature = $feat)])?
+                        #[allow(deprecated)]
                         stringify!($block) => match $block::Config::deserialize(table) {
                             Ok(config) => Ok(BlockConfig::$block(config)),
-                            Err(err) => Ok(BlockConfig::Err(Some(stringify!($block)), crate::errors::Error::new(err.to_string()))),
+                            Err(err) => Ok(BlockConfig::Err(stringify!($block), crate::errors::Error::new(err.to_string()))),
                         }
                         $(
                             #[cfg(not(feature = $feat))]
-                            stringify!($block) => Ok(BlockConfig::Err(
-                                Some(stringify!($block)),
-                                crate::errors::Error::new(format!(
-                                    "this block is behind a feature gate '{}' which must be enabled at compile time",
-                                    $feat,
-                                )),
-                            )),
+                            stringify!($block) => Err(D::Error::custom(format!(
+                                "block {} is behind a feature gate '{}' which must be enabled at compile time",
+                                stringify!($block),
+                                $feat,
+                            ))),
                         )?
                     )*
                     other => Err(D::Error::custom(format!("unknown block '{other}'")))
@@ -141,6 +144,10 @@ macro_rules! define_blocks {
 
 define_blocks!(
     amd_gpu,
+    #[deprecated(
+        since = "0.33.0",
+        note = "The block has been deprecated in favor of the the packages block"
+    )]
     apt,
     backlight,
     battery,
@@ -149,6 +156,10 @@ define_blocks!(
     custom,
     custom_dbus,
     disk_space,
+    #[deprecated(
+        since = "0.33.0",
+        note = "The block has been deprecated in favor of the the packages block"
+    )]
     dnf,
     docker,
     external_ip,
@@ -167,8 +178,14 @@ define_blocks!(
     #[cfg(feature = "notmuch")]
     notmuch,
     nvidia_gpu,
+    packages,
+    #[deprecated(
+        since = "0.33.0",
+        note = "The block has been deprecated in favor of the the packages block"
+    )]
     pacman,
     pomodoro,
+    privacy,
     rofication,
     service_status,
     sound,
@@ -186,7 +203,14 @@ define_blocks!(
     xrandr,
 );
 
-pub type BlockFuture = BoxedFuture<Result<()>>;
+/// An error which originates from a block
+#[derive(Debug, thiserror::Error)]
+#[error("In block {}: {}", .block_name, .error)]
+pub struct BlockError {
+    pub block_id: usize,
+    pub block_name: &'static str,
+    pub error: Error,
+}
 
 pub type BlockAction = Cow<'static, str>;
 
@@ -194,45 +218,42 @@ pub type BlockAction = Cow<'static, str>;
 pub struct CommonApi {
     pub(crate) id: usize,
     pub(crate) update_request: Arc<Notify>,
-    pub(crate) request_sender: mpsc::Sender<Request>,
+    pub(crate) request_sender: mpsc::UnboundedSender<Request>,
     pub(crate) error_interval: Duration,
 }
 
 impl CommonApi {
     /// Sends the widget to be displayed.
-    pub async fn set_widget(&self, widget: Widget) -> Result<()> {
+    pub fn set_widget(&self, widget: Widget) -> Result<()> {
         self.request_sender
             .send(Request {
                 block_id: self.id,
                 cmd: RequestCmd::SetWidget(widget),
             })
-            .await
             .error("Failed to send Request")
     }
 
     /// Hides the block. Send new widget to make it visible again.
-    pub async fn hide(&self) -> Result<()> {
+    pub fn hide(&self) -> Result<()> {
         self.request_sender
             .send(Request {
                 block_id: self.id,
                 cmd: RequestCmd::UnsetWidget,
             })
-            .await
             .error("Failed to send Request")
     }
 
     /// Sends the error to be displayed.
-    pub async fn set_error(&self, error: Error) -> Result<()> {
+    pub fn set_error(&self, error: Error) -> Result<()> {
         self.request_sender
             .send(Request {
                 block_id: self.id,
                 cmd: RequestCmd::SetError(error),
             })
-            .await
             .error("Failed to send Request")
     }
 
-    pub async fn set_default_actions(
+    pub fn set_default_actions(
         &self,
         actions: &'static [(MouseButton, Option<&'static str>, &'static str)],
     ) -> Result<()> {
@@ -241,18 +262,16 @@ impl CommonApi {
                 block_id: self.id,
                 cmd: RequestCmd::SetDefaultActions(actions),
             })
-            .await
             .error("Failed to send Request")
     }
 
-    pub async fn get_actions(&self) -> Result<mpsc::UnboundedReceiver<BlockAction>> {
+    pub fn get_actions(&self) -> Result<mpsc::UnboundedReceiver<BlockAction>> {
         let (tx, rx) = mpsc::unbounded_channel();
         self.request_sender
             .send(Request {
                 block_id: self.id,
                 cmd: RequestCmd::SubscribeToActions(tx),
             })
-            .await
             .error("Failed to send Request")?;
         Ok(rx)
     }

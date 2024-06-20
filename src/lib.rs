@@ -37,7 +37,7 @@ use once_cell::sync::Lazy;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Notify};
 
-use crate::blocks::{BlockAction, BlockFuture, CommonApi};
+use crate::blocks::{BlockAction, BlockError, CommonApi};
 use crate::click::{ClickHandler, MouseButton};
 use crate::config::{BlockConfigEntry, Config, SharedConfig};
 use crate::errors::*;
@@ -108,13 +108,13 @@ pub struct BarState {
 
     blocks: Vec<Block>,
     fullscreen_block: Option<usize>,
-    running_blocks: FuturesUnordered<BlockFuture>,
+    running_blocks: FuturesUnordered<BoxedFuture<()>>,
 
     widget_updates_sender: WidgetUpdatesSender,
     blocks_render_cache: Vec<RenderedBlock>,
 
-    request_sender: mpsc::Sender<Request>,
-    request_receiver: mpsc::Receiver<Request>,
+    request_sender: mpsc::UnboundedSender<Request>,
+    request_receiver: mpsc::UnboundedReceiver<Request>,
 
     widget_updates_stream: BoxedStream<Vec<usize>>,
     signals_stream: BoxedStream<Signal>,
@@ -177,7 +177,21 @@ impl Block {
         let _ = tx.send((self.id, intervals));
     }
 
+    fn send_action(&mut self, action: BlockAction) {
+        if let Some(sender) = &self.action_sender {
+            if sender.send(action).is_err() {
+                self.action_sender = None;
+            }
+        }
+    }
+
     fn set_error(&mut self, fullscreen: bool, error: Error) {
+        let error = BlockError {
+            block_id: self.id,
+            block_name: self.name,
+            error,
+        };
+
         let mut widget = Widget::new()
             .with_state(State::Critical)
             .with_format(if fullscreen {
@@ -187,7 +201,7 @@ impl Block {
             });
         widget.set_values(map! {
             "full_error_message" => Value::text(error.to_string()),
-            [if let Some(v) = &error.message] "short_error_message" => Value::text(v.to_string()),
+            [if let Some(v) = &error.error.message] "short_error_message" => Value::text(v.to_string()),
         });
         self.state = BlockState::Error { widget };
     }
@@ -195,7 +209,7 @@ impl Block {
 
 impl BarState {
     pub fn new(config: Config) -> Self {
-        let (request_sender, request_receiver) = mpsc::channel(64);
+        let (request_sender, request_receiver) = mpsc::unbounded_channel();
         let (widget_updates_sender, widget_updates_stream) =
             formatting::scheduling::manage_widgets_updates();
         Self {
@@ -266,12 +280,9 @@ impl BarState {
             .error_fullscreen_format
             .with_default_config(&self.config.error_fullscreen_format);
 
-        let block_name = block_config.config.name();
-        let block_fut = block_config.config.run(api);
-
         let block = Block {
             id: self.blocks.len(),
-            name: block_name,
+            name: block_config.config.name(),
 
             update_request,
             action_sender: None,
@@ -287,7 +298,8 @@ impl BarState {
             state: BlockState::None,
         };
 
-        self.running_blocks.push(block_fut);
+        block_config.config.spawn(api, &mut self.running_blocks);
+
         self.blocks.push(block);
         self.blocks_render_cache.push(RenderedBlock {
             segments: Vec::new(),
@@ -325,7 +337,7 @@ impl BarState {
         block.notify_intervals(&self.widget_updates_sender);
     }
 
-    fn render_block(&mut self, id: usize) -> Result<()> {
+    fn render_block(&mut self, id: usize) -> Result<(), BlockError> {
         let block = &mut self.blocks[id];
         let data = &mut self.blocks_render_cache[id].segments;
         match &block.state {
@@ -335,7 +347,11 @@ impl BarState {
             BlockState::Normal { widget } | BlockState::Error { widget, .. } => {
                 *data = widget
                     .get_data(&block.shared_config, id)
-                    .in_block(block.name, id)?;
+                    .map_err(|error| BlockError {
+                        block_id: id,
+                        block_name: block.name,
+                        error,
+                    })?;
             }
         }
         Ok(())
@@ -349,19 +365,16 @@ impl BarState {
         }
     }
 
-    async fn process_event(&mut self, restart: fn() -> !) -> Result<()> {
+    async fn process_event(&mut self, restart: fn() -> !) -> Result<(), BlockError> {
         tokio::select! {
-            // Handle blocks' errors
-            Some(block_result) = self.running_blocks.next() => {
-                block_result
-            }
+            // Poll blocks
+            Some(()) = self.running_blocks.next() => (),
             // Receive messages from blocks
             Some(request) = self.request_receiver.recv() => {
                 let id = request.block_id;
                 self.process_request(request);
                 self.render_block(id)?;
                 self.render();
-                Ok(())
             }
             // Handle scheduled updates
             Some(ids) = self.widget_updates_stream.next() => {
@@ -369,31 +382,32 @@ impl BarState {
                     self.render_block(id)?;
                 }
                 self.render();
-                Ok(())
             }
             // Handle clicks
             Some(event) = self.events_stream.next() => {
-                let block = self.blocks.get_mut(event.id).error("Events receiver: ID out of bounds")?;
+                let block = self.blocks.get_mut(event.id).expect("Events receiver: ID out of bounds");
                 match &mut block.state {
                     BlockState::None => (),
                     BlockState::Normal { .. } => {
-                        let post_actions = block.click_handler.handle(&event).await.in_block(block.name, event.id)?;
-                        if let Some(sender) = &block.action_sender {
-                            match post_actions {
-                                Some(post_actions) => {
-                                    if let Some(action) = post_actions.action {
-                                        let _ = sender.send(Cow::Owned(action));
-                                    }
-                                    if post_actions.update {
-                                        block.update_request.notify_one();
-                                    }
+                        let result = block.click_handler.handle(&event).await.map_err(|error| BlockError {
+                            block_id: event.id,
+                            block_name: block.name,
+                            error,
+                        })?;
+                        match result {
+                            Some(post_actions) => {
+                                if let Some(action) = post_actions.action {
+                                    block.send_action(Cow::Owned(action));
                                 }
-                                None => {
-                                    if let Some((_, _, action)) = block.default_actions
-                                        .iter()
-                                        .find(|(btn, widget, _)| *btn == event.button && *widget == event.instance.as_deref()) {
-                                        let _ = sender.send(Cow::Borrowed(action));
-                                    }
+                                if post_actions.update {
+                                    block.update_request.notify_one();
+                                }
+                            }
+                            None => {
+                                if let Some((_, _, action)) = block.default_actions
+                                    .iter()
+                                    .find(|(btn, widget, _)| *btn == event.button && *widget == event.instance.as_deref()) {
+                                    block.send_action(Cow::Borrowed(action));
                                 }
                             }
                         }
@@ -411,7 +425,6 @@ impl BarState {
                         self.render();
                     }
                 }
-                Ok(())
             }
             // Handle signals
             Some(signal) = self.signals_stream.next() => match signal {
@@ -419,7 +432,6 @@ impl BarState {
                     for block in &self.blocks {
                         block.update_request.notify_one();
                     }
-                    Ok(())
                 }
                 Signal::Usr2 => restart(),
                 Signal::Custom(signal) => {
@@ -428,33 +440,28 @@ impl BarState {
                             block.update_request.notify_one();
                         }
                     }
-                    Ok(())
                 }
             }
         }
+        Ok(())
     }
 
-    pub async fn run_event_loop(mut self, restart: fn() -> !) -> Result<()> {
+    pub async fn run_event_loop(mut self, restart: fn() -> !) -> Result<(), BlockError> {
         loop {
             if let Err(error) = self.process_event(restart).await {
-                match error.block {
-                    Some((_, id)) => {
-                        let block = &mut self.blocks[id];
+                let block = &mut self.blocks[error.block_id];
 
-                        if matches!(block.state, BlockState::Error { .. }) {
-                            // This should never happen. If this code runs, it could mean that we
-                            // got an error while trying to display and error. We better stop here.
-                            return Err(error);
-                        }
-
-                        block.set_error(self.fullscreen_block == Some(id), error);
-                        block.notify_intervals(&self.widget_updates_sender);
-
-                        self.render_block(id)?;
-                        self.render();
-                    }
-                    None => return Err(error),
+                if matches!(block.state, BlockState::Error { .. }) {
+                    // This should never happen. If this code runs, it could mean that we
+                    // got an error while trying to display and error. We better stop here.
+                    return Err(error);
                 }
+
+                block.set_error(self.fullscreen_block == Some(block.id), error.error);
+                block.notify_intervals(&self.widget_updates_sender);
+
+                self.render_block(error.block_id)?;
+                self.render();
             }
         }
     }

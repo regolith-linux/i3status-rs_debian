@@ -11,7 +11,7 @@
 //! Key | Values | Default
 //! ----|--------|--------
 //! `driver` | `"auto"`, `"pulseaudio"`, `"alsa"`. | `"auto"` (Pulseaudio with ALSA fallback)
-//! `format` | A string to customise the output of this block. See below for available placeholders. | <code> $icon {$volume.eng(w:2) &vert;}</code>
+//! `format` | A string to customise the output of this block. See below for available placeholders. | <code>\" $icon {$volume.eng(w:2) \|}\"</code>
 //! `name` | PulseAudio device name, or the ALSA control name as found in the output of `amixer -D yourdevice scontrols`. | PulseAudio: `@DEFAULT_SINK@` / ALSA: `Master`
 //! `device` | ALSA device name, usually in the form "hw:X" or "hw:X,Y" where `X` is the card number and `Y` is the device number as found in the output of `aplay -l`. | `default`
 //! `device_kind` | PulseAudio device kind: `source` or `sink`. | `"sink"`
@@ -95,19 +95,10 @@ mod alsa;
 mod pulseaudio;
 
 use super::prelude::*;
+use crate::wrappers::SerdeRegex;
+use indexmap::IndexMap;
 use regex::Regex;
-use serde_with::{serde_as, serde_conv, Map};
 
-// A conversion adapter that is used to convert Regex to String and vice versa
-// when serializing or deserializing using serde.
-serde_conv!(
-    RegexAsString,
-    Regex,
-    |regex: &Regex| regex.as_str().to_string(),
-    |value: String| Regex::new(&value)
-);
-
-#[serde_as]
 #[derive(Deserialize, Debug, SmartDefault)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
@@ -121,28 +112,25 @@ pub struct Config {
     pub format: FormatConfig,
     pub headphones_indicator: bool,
     pub show_volume_when_muted: bool,
-    #[serde_as(as = "Option<Map<_, _>>")]
-    pub mappings: Option<Vec<(String, String)>>,
+    pub mappings: Option<IndexMap<String, String>>,
     #[default(true)]
     pub mappings_use_regex: bool,
     pub max_vol: Option<u32>,
-    #[serde_as(as = "Map<RegexAsString, _>")]
-    pub active_port_mappings: Vec<(Regex, String)>,
+    pub active_port_mappings: IndexMap<SerdeRegex, String>,
 }
 
 enum Mappings<'a> {
-    Exact(&'a [(String, String)]),
+    Exact(&'a IndexMap<String, String>),
     Regex(Vec<(Regex, &'a str)>),
 }
 
 pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
-    let mut actions = api.get_actions().await?;
+    let mut actions = api.get_actions()?;
     api.set_default_actions(&[
         (MouseButton::Right, None, "toggle_mute"),
         (MouseButton::WheelUp, None, "volume_up"),
         (MouseButton::WheelDown, None, "volume_down"),
-    ])
-    .await?;
+    ])?;
 
     let format = config.format.with_default(" $icon {$volume.eng(w:2)|} ")?;
 
@@ -250,10 +238,8 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
                 }
             }
             Some(Mappings::Exact(m)) => {
-                if let Some((_, mapped)) =
-                    m.iter().find(|&(exact, _)| output_name == exact.as_str())
-                {
-                    output_name = mapped.clone();
+                if let Some(mapped) = m.get(&output_name) {
+                    output_name.clone_from(mapped);
                 }
             }
             None => (),
@@ -262,9 +248,9 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
             if let Some((regex, mapped)) = config
                 .active_port_mappings
                 .iter()
-                .find(|(regex, _)| regex.is_match(ap))
+                .find(|(regex, _)| regex.0.is_match(ap))
             {
-                let mapped = regex.replace(ap, mapped);
+                let mapped = regex.0.replace(ap, mapped);
                 if mapped.is_empty() {
                     active_port = None;
                 } else {
@@ -295,7 +281,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
         }
 
         widget.set_values(values);
-        api.set_widget(widget).await?;
+        api.set_widget(widget)?;
 
         loop {
             select! {
@@ -337,16 +323,6 @@ pub enum DeviceKind {
     #[default]
     Sink,
     Source,
-}
-
-#[cfg(feature = "pulseaudio")]
-impl DeviceKind {
-    pub fn default_name(self) -> Cow<'static, str> {
-        match self {
-            Self::Sink => pulseaudio::DEFAULT_SINK.lock().unwrap().clone(),
-            Self::Source => pulseaudio::DEFAULT_SOURCE.lock().unwrap().clone(),
-        }
-    }
 }
 
 #[async_trait::async_trait]

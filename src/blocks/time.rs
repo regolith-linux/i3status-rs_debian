@@ -29,10 +29,27 @@
 //! short = " $icon $timestamp.datetime(f:%R) "
 //! ```
 //!
+//! # Non Gregorian calendars
+//!
+//! You can use calendars other than the Gregorian calendar by adding the calendar specifier in the locale string. When using
+//! this feature you can't use chrono style format string, and you should use one of the options provided by
+//! the `icu4x` crate: `short`, `medium`, `long`, `full`.
+//!
+//! ** Only available using feature `icu_calendar`. **
+//!
+//! ## Example
+//!
+//! ```toml
+//! [[block]]
+//! block = "time"
+//! interval = 60
+//! format = "$timestamp.datetime(locale:'fa_IR-u-ca-persian', f:'full')"
+//! ```
+//!
 //! # Icons Used
 //! - `time`
 
-use chrono::Utc;
+use chrono::{Timelike, Utc};
 use chrono_tz::Tz;
 
 use super::prelude::*;
@@ -54,12 +71,11 @@ pub enum Timezone {
 }
 
 pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
-    let mut actions = api.get_actions().await?;
+    let mut actions = api.get_actions()?;
     api.set_default_actions(&[
         (MouseButton::Left, None, "next_timezone"),
         (MouseButton::Right, None, "prev_timezone"),
-    ])
-    .await?;
+    ])?;
 
     let format = config
         .format
@@ -79,23 +95,29 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
 
     let mut timezone = timezone_iter.next();
 
-    let mut timer = config.interval.timer();
+    let mut timer = tokio::time::interval_at(
+        tokio::time::Instant::now() + config.interval.0,
+        config.interval.0,
+    );
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let interval_seconds = config.interval.seconds();
 
     loop {
-        if timezone.is_none() {
-            // Update timezone because `chrono` will not do that for us.
-            // https://github.com/chronotope/chrono/issues/272
-            unsafe { tzset() };
-        }
-
         let mut widget = Widget::new().with_format(format.clone());
+        let now = Utc::now();
 
         widget.set_values(map! {
             "icon" => Value::icon("time"),
-            "timestamp" => Value::datetime(Utc::now(), timezone.copied())
+            "timestamp" => Value::datetime(now, timezone.copied())
         });
 
-        api.set_widget(widget).await?;
+        api.set_widget(widget)?;
+
+        let phase = now.second() as u64 % interval_seconds;
+        if phase != 0 {
+            timer.reset_after(Duration::from_secs(interval_seconds - phase));
+        }
 
         tokio::select! {
             _ = timer.tick() => (),
@@ -111,12 +133,4 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
             }
         }
     }
-}
-
-extern "C" {
-    /// The tzset function initializes the tzname variable from the value of the TZ environment
-    /// variable. It is not usually necessary for your program to call this function, because it is
-    /// called automatically when you use the other time conversion functions that depend on the
-    /// time zone.
-    fn tzset();
 }

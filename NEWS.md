@@ -1,3 +1,61 @@
+# i3status-rust 0.33.1
+
+### New Blocks and Features
+
+* Memory: add zram, zswap support (#2018).
+* Music: allow asymmetric seek steps (#2019).
+
+### Bug Fixes and Improvements
+
+* Time: snap seconds to the multiple of interval (#2005).
+* Privacy(Pipewire): fix status bar freezing (#2024).
+* Privacy(v4l): change device scan method (#2009).
+* Kdeconnect: fix device_id parameter (#2033).
+* AMD GPU: better error message on device not found (#2035).
+
+# i3status-rust 0.33.0
+
+### Breaking Changes
+
+* Kdeconnect: removed `hide_disconnected` option and `connected` formatting flag (#1860).
+
+### New Blocks and Features
+
+* cpu: Add `critical_info`/`warning_info`/`info_info` options (#1983).
+* Kdeconnect: add `format_disconnected` and `format_missing` options (#1860).
+* Toggle: allow customizing state/theming when on/off by adding `state_on` and `state_off` options (#1974).
+* Disk Space: add support for TiB, GiB, MiB and KiB in `alert_unit` (#1977).
+* Add new `privacy` block which can detect if your webcam, screen/monitor, microphone, or audio monitor is being captured by another application. Note: only webcams that use v4l can be detected by default, enable the `pipewire` to monitor the use of the other listed kinds of media.
+* Add new `packages` block which supports `apt`, `dnf`, and `pacman/aur`
+
+### Deprecation Warnings
+* `apt`, `dnf`, and `pacman` blocks removed in a future release.
+
+# i3status-rust 0.32.3
+
+### New Blocks and Features
+
+* Weather: add `zip` option for OpenWeatherMap (#1948).
+* Weather: add `format_alt` option (#1944).
+* Weather: implement forecast (#1944).
+* Music: add `format_alt` (#1960).
+* Apt: added config option `ignore_updates_regex` to filter the list of updates (#1967).
+* Time: add basic support for non Gregorian calendars (#1968).
+
+### Bug Fixes and Improvements
+
+* Xrandr: support multiple outputs (#1949).
+* Fail if click handler config refers to unknown button.
+* Weather: `location` placeholder now works with Met.no if autolocate is enabled (#1950).
+
+# i3status-rust 0.32.2
+
+### Bug Fixes and Improvements
+
+* Weather: Add icons for night, separated icons for Fog/Mist from Cloudy.
+* icons: Add new set of emoji icons.
+* Fix "update = true" click event handling for some blocks (e.g. pacman).
+
 # i3status-rust 0.32.1
 
 ### Bug Fixes and Improvements
@@ -128,7 +186,7 @@
 
 * In version 0.31 sound's `mappings_use_regex` will default to `true`.
 
-* In the future `block = "..."` will be required to be the first field of block configs. 
+* In the future `block = "..."` will be required to be the first field of block configs.
   This will be so that block configuration errors will not break the entire bar.
   For example,
   ```toml
@@ -269,7 +327,7 @@ https://raw.githubusercontent.com/greshake/i3status-rust/v0.30.0/examples/config
   block = "cpu"
   format = " $icon $utilization "
   ```
-  
+
 - Icons can now be referenced by name within `format` strings, e.g. `format = " Hello ^icon_ping "` will use the icon `ping` from the icon set that is currently in use.
 
 - Top-level `theme` and `icons` config options have been removed. For example,
@@ -383,9 +441,9 @@ toggle | `text` option is removed and now you can use `format` to set it
   ```
 - `networkmanager` block has been removed (could be revisited in the future), so `net` block should be used instead.
   Note there is no equivalent to `interface_name_exclude` in `net` as it only shows one interface at a time.
-  
+
   Example of a `networkmanager` config ported to `net`:  
-  
+
   v0.22:  
   ```toml
   [[block]]
@@ -393,7 +451,7 @@ toggle | `text` option is removed and now you can use `format` to set it
   on_click = "alacritty -e nmtui"
   interface_name_include = ['br\-[0-9a-f]{12}', 'docker\d+']
   ```
-  
+
   v0.30:  
   ```toml
   [[block]]
@@ -438,7 +496,7 @@ toggle | `text` option is removed and now you can use `format` to set it
 
 ### Breaking changes
 
-* Battery: remove `allow_missing` config option (#1461 by @MaxVerevkin) 
+* Battery: remove `allow_missing` config option (#1461 by @MaxVerevkin)
 * Temperature: sysfs driver removed
 
 ### New Blocks and Features
@@ -449,12 +507,12 @@ toggle | `text` option is removed and now you can use `format` to set it
 
 ### New Blocks and Features
 
-* Expand paths (e.g. `~`->`$HOME`, just like in shell) for many blocks (#1453 by @Henriquelay) 
+* Expand paths (e.g. `~`->`$HOME`, just like in shell) for many blocks (#1453 by @Henriquelay)
 
 ### Bug Fixes and Improvements
 
-* Battery: fix availability check for some devices with `sysfs` driver (#1456 by @ferdinandschober) 
-* Battery: fallback to `charge_level` if `capacity` cannot be calculated (#1458 by @ferdinandschober) 
+* Battery: fix availability check for some devices with `sysfs` driver (#1456 by @ferdinandschober)
+* Battery: fallback to `charge_level` if `capacity` cannot be calculated (#1458 by @ferdinandschober)
 
 # i3status-rust 0.21.9
 
@@ -475,7 +533,7 @@ toggle | `text` option is removed and now you can use `format` to set it
 ### New Blocks and Features
 
 * Icons can now be overridden per block with `icons_overrides` (97a66195f16469a4011a1521fb991bbe943196b6)
- 
+
 ### Bug Fixes and Improvements
 
 * Battery: be more efficient by enumerating devices less often (#1437 by bim9262)
@@ -487,7 +545,7 @@ toggle | `text` option is removed and now you can use `format` to set it
 ### New Blocks and Features
 
 * Hueshift: Add wl-gammarelay driver (#1421 by bim9262)
- 
+
 ### Bug Fixes and Improvements
 
 * Battery: prefer system batteries (BATx/CMBx) when doing auto discovery (3db119a5a2dd12a65a499377cf849d418bfee308)
@@ -496,8 +554,8 @@ toggle | `text` option is removed and now you can use `format` to set it
 
 ### New Blocks and Features
 
-* Add `if_command` field to block config to allow conditional enabling of blocks on startup (#1415 by @LordMZTE) 
- 
+* Add `if_command` field to block config to allow conditional enabling of blocks on startup (#1415 by @LordMZTE)
+
 ### Bug Fixes and Improvements
 
 * Battery: revert to previous default device discovery behaviour (d6fbfd06cc4d078efccb1c559e7eb934d36ffe7a)
@@ -581,7 +639,7 @@ toggle | `text` option is removed and now you can use `format` to set it
 
 * IBus block: no longer crashes the bar if IBus reports that there is no global engine set on first startup
 * Music block: the default text icons are now pango escaped and should cause no errors with i3bar
- 
+
 # i3status-rust 0.20.5
 
 ### New Blocks and Features
@@ -595,7 +653,7 @@ toggle | `text` option is removed and now you can use `format` to set it
 * Hueshift block: fix sluggishness by updating widget text on interactions (#1320 by @JohnDowson)
 * Music block: fix long standing issue where block randomly stops updating (#1327 by @jamesmcm)
 * Nvidia block: fix nvidia block falling behind on lines from nvidia-smi (#1296 by @ZachCook)
- 
+
 
 # i3status-rust 0.20.4
 
@@ -666,7 +724,7 @@ If you are manually managing your icon/theme files then you may want to update t
 
 Themes/Icons:
 
-* These have been moved out into files instead of being hardcoded in the Rust source. The following folders are checked in this order: first `$XDG_CONFIG_HOME/i3status-rust/<icons|themes>`, next `$HOME/.local/share/i3status-rust/<icons|themes>`, finally `/usr/share/i3status-rust/<icons|themes>`. If installing manually via cargo, you will need to copy the files to an appropriate location (an `install.sh` script is provided which does this). If installing via the AUR on Arch Linux, the package will install the files to `/usr/share/i3status-rust/<icons|themes>` for you, so you do not need to do anything (this should also be true for other distros assuming the package maintainer has packaged i3status-rust correctly). 
+* These have been moved out into files instead of being hardcoded in the Rust source. The following folders are checked in this order: first `$XDG_CONFIG_HOME/i3status-rust/<icons|themes>`, next `$HOME/.local/share/i3status-rust/<icons|themes>`, finally `/usr/share/i3status-rust/<icons|themes>`. If installing manually via cargo, you will need to copy the files to an appropriate location (an `install.sh` script is provided which does this). If installing via the AUR on Arch Linux, the package will install the files to `/usr/share/i3status-rust/<icons|themes>` for you, so you do not need to do anything (this should also be true for other distros assuming the package maintainer has packaged i3status-rust correctly).
 
 * Per block theme overrides have been renamed from `color_overrides` to `theme_overrides` (this was previously undocumented but has since been mentioned in themes.md)
 
@@ -674,10 +732,10 @@ Formatting:
 
 * Formatting for all blocks using `format` strings has been overhauled to allow users to customise how numbers and strings are displayed, which was not possible previously. Due to this some blocks may now display slightly differently to previous versions and have been documented below. Refer to the [formatting documentation](doc/blocks.md#formatting) to get more information on the new formatting options.
 
-Blocks: 
+Blocks:
 
 * CPU Utilization block: Due to an overhaul of our internal code, the `per_core` option has been removed. The same configuration can be achieved using the new `{utilization<n>}` format keys.
-* Battery and Disk Space blocks: The `{bar}` format key has been removed in favor of the new [bar](doc/blocks.md#formatting#bar-max-value) formatter. For example, to make the Battery block display the current percentage as a 6 character bar with 100% as the max value, set the format string as so: `format = "{percentage:6#100}`. 
+* Battery and Disk Space blocks: The `{bar}` format key has been removed in favor of the new [bar](doc/blocks.md#formatting#bar-max-value) formatter. For example, to make the Battery block display the current percentage as a 6 character bar with 100% as the max value, set the format string as so: `format = "{percentage:6#100}`.
 * Disk Space block: The `{unit}` format key has been removed since the unit of `{free}` and similar format keys don't rely on `unit` configuration option anymore.
 * Maildir block: this is now optional and must be enabled at compile time (#1103 by @MaxVerevkin)
 * Memory block: all old format keys have been removed, refer to the table below for more details.
@@ -745,7 +803,7 @@ Memory block removed format keys:
 * New compile time feature `debug_borders` for debugging spacing issues (#1083 by @MaxVerevkin)
 * New "material-nf" icon set (#1095 by @MaxVerevkin)
 * New `icons_format` config option for overriding icon formatting on a per-block basis (#1095 by @MaxVerevkin)
- 
+
 ### Bug Fixes and Improvements
 
 * Music block: fix `on_collapsed_click` which was broken in a previous release (#1061 by @MaxVerevkin)
@@ -951,7 +1009,7 @@ Fixes crash on i3 introduced in 0.14.4
 
 * Focused Window block new `show_marks` option to show marks instead of title (#532 by @ammgws)
 
-* Net and Speedtest blocks now take `speed_min_unit` and `speed_digits` parameters to format speeds (#704, #707 by @GladOSkar, @ammgws). 
+* Net and Speedtest blocks now take `speed_min_unit` and `speed_digits` parameters to format speeds (#704, #707 by @GladOSkar, @ammgws).
 
 * Net block `ssid` config option now supports `iwctl` and `wpa_cli` (#625, #721 by @ammgws). Can now show bitrate for wired devices (#612 by @ammgws). New `ipv6` option (#647 by @ammgws)
 
@@ -993,7 +1051,7 @@ Fixes crash on i3 introduced in 0.14.4
 
 * Toggle block fixed to only toggle if command exited successfully (#648 by @ammgws)
 
-* Fix missing icons for `bat_half` in the none theme (#719 by @varunkashyap) 
+* Fix missing icons for `bat_half` in the none theme (#719 by @varunkashyap)
 
 * Fix panic in CPU block if >32 CPUs present (#639 @snicket2100)
 

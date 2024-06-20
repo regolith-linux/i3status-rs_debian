@@ -18,11 +18,14 @@
 //!
 //! Key | Values | Default
 //! ----|--------|--------
-//! `format` | A string to customise the output of this block. See below for available placeholders. | <code>" $icon {$combo.str(max_w:25,rot_interval:0.5) $play &vert;}"</code>
-//! `player` | Name(s) of the music player(s) MPRIS interface. This can be either a music player name or an array of music player names. Run <code>busctl --user list &vert; grep "org.mpris.MediaPlayer2." &vert; cut -d' ' -f1</code> and the name is the part after "org.mpris.MediaPlayer2.". | `None`
+//! `format` | A string to customise the output of this block. See below for available placeholders. | <code>\" $icon {$combo.str(max_w:25,rot_interval:0.5) $play \|}\"</code>
+//! `format_alt` | If set, block will switch between `format` and `format_alt` on every click | `None`
+//! `player` | Name(s) of the music player(s) MPRIS interface. This can be either a music player name or an array of music player names. Run <code>busctl --user list \| grep "org.mpris.MediaPlayer2." \| cut -d' ' -f1</code> and the name is the part after "org.mpris.MediaPlayer2.". | `None`
 //! `interface_name_exclude` | A list of regex patterns for player MPRIS interface names to ignore. | `["playerctld"]`
 //! `separator` | String to insert between artist and title. | `" - "`
 //! `seek_step_secs` | Positive number of seconds to seek forward/backward when scrolling on the bar. Does not need to be an integer. | `1`
+//! `seek_forward_step_secs` | Positive number of seconds to seek forward when scrolling on the bar. Does not need to be an integer. | `seek_step_secs`
+//! `seek_backward_step_secs` | Positive number of seconds to seek backward when scrolling on the bar. Does not need to be an integer. | `seek_step_secs`
 //! `volume_step` | The percent volume level is increased/decreased for the selected audio device when scrolling. Capped automatically at 50. | `5`
 //!
 //! Note: All placeholders except `icon` can be absent. See the examples below to learn how to handle this.
@@ -36,7 +39,7 @@
 //! `combo`       | Resolves to "`$artist[sep]$title"`, `"$artist"`, `"$title"`, or `"$url"` depending on what information is available. `[sep]` is set by `separator` option. | Text
 //! `player`      | Name of the current player (taken from the last part of its MPRIS bus name) | Text
 //! `avail`       | Total number of players available to switch between | Number
-//! `cur`         | Total number of players available to switch between | Number
+//! `cur`         | The current player index of the available players | Number
 //! `play`        | Play/Pause button | Clickable icon
 //! `next`        | Next button | Clickable icon
 //! `prev`        | Previous button | Clickable icon
@@ -53,6 +56,7 @@
 //! `seek_backward` | Wheel Down
 //! `volume_up`     | -
 //! `volume_down`   | -
+//! `toggle_format` | Left
 //!
 //! # Examples
 //!
@@ -84,14 +88,20 @@
 //! interface_name_exclude = [".*kdeconnect.*", "mpd"]
 //! ```
 //!
-//! Click anywhere to play/pause:
+//! Click anywhere to play/pause, middle click to toggle format:
 //!
 //! ```toml
 //! [[block]]
 //! block = "music"
+//! format = " format 1 "
+//! format_alt = " format 2 "
 //! [[block.click]]
 //! button = "left"
 //! action = "play_pause"
+//! [[block.click]]
+//! button = "middle"
+//! widget = "."
+//! action = "toggle_format"
 //! ```
 //!
 //! Scroll to change the player volume, use the forward and back buttons to seek:
@@ -147,6 +157,7 @@ const PREV_BTN: &str = "prev_btn";
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     pub format: FormatConfig,
+    pub format_alt: Option<FormatConfig>,
     pub player: PlayerName,
     #[default(vec!["playerctld".into()])]
     pub interface_name_exclude: Vec<String>,
@@ -154,6 +165,8 @@ pub struct Config {
     pub separator: String,
     #[default(1.into())]
     pub seek_step_secs: Seconds<false>,
+    pub seek_forward_step_secs: Option<Seconds<false>>,
+    pub seek_backward_step_secs: Option<Seconds<false>>,
     #[default(5.0)]
     pub volume_step: f64,
 }
@@ -167,7 +180,7 @@ pub enum PlayerName {
 }
 
 pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
-    let mut actions = api.get_actions().await?;
+    let mut actions = api.get_actions()?;
     api.set_default_actions(&[
         (MouseButton::Left, Some(PLAY_PAUSE_BTN), "play_pause"),
         (MouseButton::Left, Some(NEXT_BTN), "next"),
@@ -175,16 +188,31 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
         (MouseButton::Right, None, "next_player"),
         (MouseButton::WheelUp, None, "seek_forward"),
         (MouseButton::WheelDown, None, "seek_backward"),
-    ])
-    .await?;
+        (MouseButton::Left, None, "toggle_format"),
+    ])?;
 
     let dbus_conn = new_dbus_connection().await?;
 
-    let format = config
+    let mut format = config
         .format
         .with_default(" $icon {$combo.str(max_w:25,rot_interval:0.5) $play |}")?;
+    let mut format_alt = match &config.format_alt {
+        Some(f) => Some(f.with_default("")?),
+        None => None,
+    };
 
     let volume_step = config.volume_step.clamp(0.0, 50.0) / 100.0;
+
+    let seek_forward_step = config
+        .seek_forward_step_secs
+        .unwrap_or(config.seek_step_secs)
+        .0
+        .as_micros() as i64;
+    let seek_backward_step = -(config
+        .seek_backward_step_secs
+        .unwrap_or(config.seek_step_secs)
+        .0
+        .as_micros() as i64);
 
     let new_btn = |icon: &str, instance: &'static str| -> Result<Value> {
         Ok(Value::icon(icon.to_string()).with_instance(instance))
@@ -332,12 +360,12 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
                 let mut widget = Widget::new().with_format(format.clone());
                 widget.set_values(values);
                 widget.state = state;
-                api.set_widget(widget).await?;
+                api.set_widget(widget)?;
             }
             None => {
                 let mut widget = Widget::new().with_format(format.clone());
                 widget.set_values(map!("icon" => Value::icon("music")));
-                api.set_widget(widget).await?;
+                api.set_widget(widget)?;
             }
         }
 
@@ -347,8 +375,8 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
                     let msg = msg.unwrap();
                     let msg = PropertiesChanged::from_message(msg).unwrap();
                     let args = msg.args().unwrap();
-                    let header = msg.header().unwrap();
-                    let sender = header.sender().unwrap().unwrap();
+                    let header = msg.message().header();
+                    let sender = header.sender().unwrap();
                     if let Some((pos, player)) = players.iter_mut().enumerate().find(|p| &*p.1.owner == sender) {
                         let props = args.changed_properties;
                         if let Some(status) = props.get("PlaybackStatus") {
@@ -357,10 +385,10 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
                         }
                         if let Some(metadata) = props.get("Metadata") {
                             player.metadata =
-                                zbus_mpris::PlayerMetadata::try_from(metadata.to_owned()).unwrap();
+                                zbus_mpris::PlayerMetadata::try_from(metadata.try_to_owned().unwrap()).unwrap();
                         }
                         if let Some(volume) = props.get("Volume") {
-                            player.volume = Some(*volume.downcast_ref().unwrap());
+                            player.volume = Some(*volume.downcast_ref::<&f64>().unwrap());
                         }
                         if player.status == Some(PlaybackStatus::Playing)
                         && (
@@ -443,16 +471,22 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
                                 break;
                             }
                             "seek_forward" => {
-                                player.seek(config.seek_step_secs.0.as_micros() as i64).await?;
+                                player.seek(seek_forward_step).await?;
                             }
                             "seek_backward" => {
-                                player.seek(-(config.seek_step_secs.0.as_micros() as i64)).await?;
+                                player.seek(seek_backward_step).await?;
                             }
                             "volume_up" => {
                                 player.set_volume(volume_step).await?;
                             }
                             "volume_down" => {
                                 player.set_volume(-volume_step).await?;
+                            }
+                            "toggle_format" => {
+                                if let Some(format_alt) = &mut format_alt {
+                                    std::mem::swap(format_alt, &mut format);
+                                    break;
+                                }
                             }
                             _ => (),
                         }

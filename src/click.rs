@@ -3,9 +3,10 @@ use std::fmt;
 use serde::de::{self, Deserializer, Visitor};
 use serde::Deserialize;
 
-use crate::errors::{Result, ResultExt};
+use crate::errors::{ErrorContext, Result};
 use crate::protocol::i3bar_event::I3BarEvent;
 use crate::subprocess::{spawn_shell, spawn_shell_sync};
+use crate::wrappers::SerdeRegex;
 
 /// Can be one of `left`, `middle`, `right`, `up`, `down`, `forward`, `back` or `double_left`.
 ///
@@ -21,7 +22,6 @@ pub enum MouseButton {
     WheelDown,
     Forward,
     Back,
-    Unknown,
     DoubleLeft,
 }
 
@@ -39,7 +39,11 @@ impl ClickHandler {
         let Some(entry) = self
             .0
             .iter()
-            .find(|e| e.button == event.button && e.widget == event.instance)
+            .filter(|e| e.button == event.button)
+            .find(|e| match &e.widget {
+                None => event.instance.is_none(),
+                Some(re) => re.0.is_match(event.instance.as_deref().unwrap_or("block")),
+            })
         else {
             return Ok(None);
         };
@@ -67,7 +71,7 @@ pub struct ClickConfigEntry {
     button: MouseButton,
     /// To which part of the block this entry applies
     #[serde(default)]
-    widget: Option<String>,
+    widget: Option<SerdeRegex>,
     /// Which command to run
     #[serde(default)]
     cmd: Option<String>,
@@ -93,7 +97,7 @@ impl<'de> Deserialize<'de> for MouseButton {
             type Value = MouseButton;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("u64 or string")
+                formatter.write_str("button as int or string")
             }
 
             // ```toml
@@ -114,7 +118,7 @@ impl<'de> Deserialize<'de> for MouseButton {
                     "back" => Back,
                     // Experimental
                     "double_left" => DoubleLeft,
-                    _ => Unknown,
+                    other => return Err(E::custom(format!("unknown button '{other}'"))),
                 })
             }
 
@@ -132,9 +136,9 @@ impl<'de> Deserialize<'de> for MouseButton {
                     3 => Right,
                     4 => WheelUp,
                     5 => WheelDown,
-                    9 => Forward,
                     8 => Back,
-                    _ => Unknown,
+                    9 => Forward,
+                    other => return Err(E::custom(format!("unknown button '{other}'"))),
                 })
             }
             fn visit_u64<E>(self, number: u64) -> Result<MouseButton, E>

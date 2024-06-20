@@ -1,3 +1,10 @@
+use std::cmp::{max, min};
+use std::convert::{TryFrom, TryInto};
+use std::io;
+use std::os::fd::{IntoRawFd, RawFd};
+use std::sync::{Arc, Mutex, Weak};
+use std::thread;
+
 use libc::c_void;
 use libpulse_binding::callbacks::ListResult;
 use libpulse_binding::context::{
@@ -8,21 +15,13 @@ use libpulse_binding::mainloop::api::MainloopApi;
 use libpulse_binding::mainloop::standard::{IterateResult, Mainloop};
 use libpulse_binding::proplist::{properties, Proplist};
 use libpulse_binding::volume::{ChannelVolumes, Volume};
-
-use crossbeam_channel::{unbounded, Sender};
-
-use std::cmp::{max, min};
-use std::convert::{TryFrom, TryInto};
-use std::io;
-use std::os::fd::RawFd;
-use std::sync::Mutex;
-use std::thread;
+use tokio::sync::Notify;
 
 use super::super::prelude::*;
 use super::{DeviceKind, SoundDevice};
 
 static CLIENT: Lazy<Result<Client>> = Lazy::new(Client::new);
-static EVENT_LISTENER: Mutex<Vec<tokio::sync::mpsc::Sender<()>>> = Mutex::new(Vec::new());
+static EVENT_LISTENER: Mutex<Vec<Weak<Notify>>> = Mutex::new(Vec::new());
 static DEVICES: Lazy<Mutex<HashMap<(DeviceKind, String), VolInfo>>> = Lazy::new(default);
 
 // Default device names
@@ -30,6 +29,15 @@ pub(super) static DEFAULT_SOURCE: Mutex<Cow<'static, str>> =
     Mutex::new(Cow::Borrowed("@DEFAULT_SOURCE@"));
 pub(super) static DEFAULT_SINK: Mutex<Cow<'static, str>> =
     Mutex::new(Cow::Borrowed("@DEFAULT_SINK@"));
+
+impl DeviceKind {
+    pub fn default_name(self) -> Cow<'static, str> {
+        match self {
+            Self::Sink => DEFAULT_SINK.lock().unwrap().clone(),
+            Self::Source => DEFAULT_SOURCE.lock().unwrap().clone(),
+        }
+    }
+}
 
 pub(super) struct Device {
     name: Option<String>,
@@ -40,7 +48,7 @@ pub(super) struct Device {
     volume: Option<ChannelVolumes>,
     volume_avg: u32,
     muted: bool,
-    updates: tokio::sync::mpsc::Receiver<()>,
+    notify: Arc<Notify>,
 }
 
 struct Connection {
@@ -49,7 +57,7 @@ struct Connection {
 }
 
 struct Client {
-    send_req: Sender<ClientRequest>,
+    send_req: std::sync::mpsc::Sender<ClientRequest>,
     ml_waker: MainloopWaker,
 }
 
@@ -198,7 +206,7 @@ impl Connection {
 
 impl Client {
     fn new() -> Result<Client> {
-        let (send_req, recv_req) = unbounded();
+        let (send_req, recv_req) = std::sync::mpsc::channel();
         let ml_waker = MainloopWaker::new().unwrap();
 
         Connection::spawn("sound_pulseaudio", move |mut connection| {
@@ -238,11 +246,11 @@ impl Client {
                 }
 
                 loop {
+                    use std::sync::mpsc::TryRecvError;
                     let req = match recv_req.try_recv() {
                         Ok(x) => x,
-                        Err(e) if e.is_empty() => break,
-                        Err(e) if e.is_disconnected() => return false,
-                        Err(_) => unreachable!(),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => return false,
                     };
 
                     use ClientRequest::*;
@@ -335,14 +343,14 @@ impl Client {
         EVENT_LISTENER
             .lock()
             .unwrap()
-            .retain(|tx| tx.blocking_send(()).is_ok());
+            .retain(|notify| notify.upgrade().inspect(|x| x.notify_one()).is_some());
     }
 }
 
 impl Device {
     pub(super) fn new(device_kind: DeviceKind, name: Option<String>) -> Result<Self> {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
-        EVENT_LISTENER.lock().unwrap().push(tx);
+        let notify = Arc::new(Notify::new());
+        EVENT_LISTENER.lock().unwrap().push(Arc::downgrade(&notify));
 
         Client::send(ClientRequest::GetDefaultDevice)?;
 
@@ -355,7 +363,7 @@ impl Device {
             volume: None,
             volume_avg: 0,
             muted: false,
-            updates: rx,
+            notify,
         };
 
         Client::send(ClientRequest::GetInfoByName(device_kind, device.name()))?;
@@ -407,9 +415,9 @@ impl SoundDevice for Device {
         if let Some(info) = devices.get(&(self.device_kind, self.name())) {
             self.volume(info.volume);
             self.muted = info.mute;
-            self.description = info.description.clone();
-            self.active_port = info.active_port.clone();
-            self.form_factor = info.form_factor.clone();
+            self.description.clone_from(&info.description);
+            self.active_port.clone_from(&info.active_port);
+            self.form_factor.clone_from(&info.form_factor);
         }
 
         Ok(())
@@ -457,10 +465,8 @@ impl SoundDevice for Device {
     }
 
     async fn wait_for_update(&mut self) -> Result<()> {
-        self.updates
-            .recv()
-            .await
-            .error("Failed to receive new update")
+        self.notify.notified().await;
+        Ok(())
     }
 }
 
@@ -469,6 +475,7 @@ impl SoundDevice for Device {
 /// Has the same purpose as [`Mainloop::wake`], but can be shared across threads.
 #[derive(Debug, Clone, Copy)]
 struct MainloopWaker {
+    // Note: these fds are never closed, but this is OK because there is only one instance of this struct.
     pipe_tx: RawFd,
     pipe_rx: RawFd,
 }
@@ -477,7 +484,10 @@ impl MainloopWaker {
     /// Create new waker.
     fn new() -> io::Result<Self> {
         let (pipe_rx, pipe_tx) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)?;
-        Ok(Self { pipe_tx, pipe_rx })
+        Ok(Self {
+            pipe_tx: pipe_tx.into_raw_fd(),
+            pipe_rx: pipe_rx.into_raw_fd(),
+        })
     }
 
     /// Attach this waker to a [`Mainloop`].
@@ -505,7 +515,12 @@ impl MainloopWaker {
 
     /// Interrupt blocking [`Mainloop::iterate`].
     fn wake(self) -> io::Result<()> {
-        nix::unistd::write(self.pipe_tx, &[0])?;
-        Ok(())
+        let buf = [0u8];
+        let res = unsafe { libc::write(self.pipe_tx, buf.as_ptr().cast(), 1) };
+        if res == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 }

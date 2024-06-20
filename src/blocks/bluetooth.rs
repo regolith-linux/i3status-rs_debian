@@ -18,8 +18,8 @@
 //! ----|--------|--------
 //! `mac` | MAC address of the Bluetooth device | **Required**
 //! `adapter_mac` | MAC Address of the Bluetooth adapter (in case your device was connected to multiple currently available adapters) | `None`
-//! `format` | A string to customise the output of this block. See below for available placeholders. | <code>" $icon $name{ $percentage&vert;} "</code>
-//! `disconnected_format` | A string to customise the output of this block. See below for available placeholders. | <code>" $icon{ $name&vert;} "</code>
+//! `format` | A string to customise the output of this block. See below for available placeholders. | <code>\" $icon $name{ $percentage\|} \"</code>
+//! `disconnected_format` | A string to customise the output of this block. See below for available placeholders. | <code>\" $icon{ $name\|} \"</code>
 //! `battery_state` | A mapping from battery percentage to block's [state](State) (color). See example below. | 0..15 -> critical, 16..30 -> warning, 31..60 -> info, 61..100 -> good
 //!
 //! Placeholder    | Value                                                                 | Type   | Unit
@@ -79,9 +79,8 @@ pub struct Config {
 }
 
 pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
-    let mut actions = api.get_actions().await?;
-    api.set_default_actions(&[(MouseButton::Right, None, "toggle")])
-        .await?;
+    let mut actions = api.get_actions()?;
+    api.set_default_actions(&[(MouseButton::Right, None, "toggle")])?;
 
     let format = config.format.with_default(" $icon $name{ $percentage|} ")?;
     let disconnected_format = config
@@ -129,14 +128,14 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
                 }
 
                 widget.set_values(values);
-                api.set_widget(widget).await?;
+                api.set_widget(widget)?;
             }
             // Unavailable
             None => {
                 debug!("Showing device as unavailable");
                 let mut widget = Widget::new().with_format(disconnected_format.clone());
                 widget.set_values(map!("icon" => Value::icon("bluetooth")));
-                api.set_widget(widget).await?;
+                api.set_widget(widget)?;
             }
         }
 
@@ -251,12 +250,13 @@ impl DeviceMonitor {
                     .await
                     .error("Failed to monitor interfaces")?;
 
-                let mut bluez_owner_changed = DBusProxy::new(self.manager_proxy.connection())
-                    .await
-                    .error("Failed to create DBusProxy")?
-                    .receive_name_owner_changed_with_args(&[(0, "org.bluez")])
-                    .await
-                    .unwrap();
+                let mut bluez_owner_changed =
+                    DBusProxy::new(self.manager_proxy.inner().connection())
+                        .await
+                        .error("Failed to create DBusProxy")?
+                        .receive_name_owner_changed_with_args(&[(0, "org.bluez")])
+                        .await
+                        .unwrap();
 
                 loop {
                     select! {
@@ -270,14 +270,14 @@ impl DeviceMonitor {
                         }
                         Some(event) = interface_added.next() => {
                             let args = event.args().error("Failed to get the args")?;
-                            if args.object_path() == device.device.path() {
+                            if args.object_path() == device.device.inner().path() {
                                 debug!("Interfaces added: {:?}", args.interfaces_and_properties().keys());
                                 return Ok(());
                             }
                         }
                         Some(event) = interface_removed.next() => {
                             let args = event.args().error("Failed to get the args")?;
-                            if args.object_path() == device.device.path() {
+                            if args.object_path() == device.device.inner().path() {
                                 self.device = None;
                                 debug!("Device is no longer available");
                                 return Ok(());
@@ -331,10 +331,7 @@ impl Device {
         mac: &str,
         adapter_mac: Option<&str>,
     ) -> Result<Option<Self>> {
-        let Ok(devices) = manager_proxy
-            .get_managed_objects()
-            .await
-        else {
+        let Ok(devices) = manager_proxy.get_managed_objects().await else {
             debug!("could not get the list of managed objects");
             return Ok(None);
         };
@@ -351,7 +348,7 @@ impl Device {
                     };
                     let addr: &str = adapter_interface
                         .get("Address")
-                        .and_then(|a| a.downcast_ref())
+                        .and_then(|a| a.downcast_ref().ok())
                         .unwrap();
                     if addr == adapter_mac {
                         adapter_path = Some(path);
@@ -375,15 +372,14 @@ impl Device {
                 }
             }
 
-            let Some(device_interface) = interfaces.get("org.bluez.Device1")
-            else {
+            let Some(device_interface) = interfaces.get("org.bluez.Device1") else {
                 // Not a device
                 continue;
             };
 
             let addr: &str = device_interface
                 .get("Address")
-                .and_then(|a| a.downcast_ref())
+                .and_then(|a| a.downcast_ref().ok())
                 .unwrap();
             if addr != mac {
                 continue;
@@ -392,14 +388,14 @@ impl Device {
             debug!("Found device with path {:?}", path);
 
             return Ok(Some(Self {
-                props: PropertiesProxy::builder(manager_proxy.connection())
+                props: PropertiesProxy::builder(manager_proxy.inner().connection())
                     .destination("org.bluez")
                     .and_then(|x| x.path(path.clone()))
                     .unwrap()
                     .build()
                     .await
                     .error("Failed to create PropertiesProxy")?,
-                device: Device1Proxy::builder(manager_proxy.connection())
+                device: Device1Proxy::builder(manager_proxy.inner().connection())
                     // No caching because https://github.com/greshake/i3status-rust/issues/1565#issuecomment-1379308681
                     .cache_properties(zbus::CacheProperties::No)
                     .path(path.clone())
@@ -407,7 +403,7 @@ impl Device {
                     .build()
                     .await
                     .error("Failed to create Device1Proxy")?,
-                battery: Battery1Proxy::builder(manager_proxy.connection())
+                battery: Battery1Proxy::builder(manager_proxy.inner().connection())
                     .cache_properties(zbus::CacheProperties::No)
                     .path(path)
                     .unwrap()
@@ -422,23 +418,23 @@ impl Device {
     }
 }
 
-#[zbus::dbus_proxy(interface = "org.bluez.Device1", default_service = "org.bluez")]
+#[zbus::proxy(interface = "org.bluez.Device1", default_service = "org.bluez")]
 trait Device1 {
     fn connect(&self) -> zbus::Result<()>;
     fn disconnect(&self) -> zbus::Result<()>;
 
-    #[dbus_proxy(property)]
+    #[zbus(property)]
     fn connected(&self) -> zbus::Result<bool>;
 
-    #[dbus_proxy(property)]
+    #[zbus(property)]
     fn name(&self) -> zbus::Result<String>;
 
-    #[dbus_proxy(property)]
+    #[zbus(property)]
     fn icon(&self) -> zbus::Result<String>;
 }
 
-#[zbus::dbus_proxy(interface = "org.bluez.Battery1", default_service = "org.bluez")]
+#[zbus::proxy(interface = "org.bluez.Battery1", default_service = "org.bluez")]
 trait Battery1 {
-    #[dbus_proxy(property)]
+    #[zbus(property)]
     fn percentage(&self) -> zbus::Result<u8>;
 }

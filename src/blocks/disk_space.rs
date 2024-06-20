@@ -11,7 +11,7 @@
 //! `warning` | A value which will trigger warning block state | `20.0`
 //! `alert` | A value which will trigger critical block state | `10.0`
 //! `info_type` | Determines which information will affect the block state. Possible values are `"available"`, `"free"` and `"used"` | `"available"`
-//! `alert_unit` | The unit of `alert` and `warning` options. If not set, percents are used. Possible values are `"B"`, `"KB"`, `"MB"`, `"GB"` and `"TB"` | `None`
+//! `alert_unit` | The unit of `alert` and `warning` options. If not set, percents are used. Possible values are `"B"`, `"KB"`, `"KiB"`, `"MB"`, `"MiB"`, `"GB"`, `"Gib"`, `"TB"` and `"TiB"` | `None`
 //!
 //! Placeholder  | Value                                                              | Type   | Unit
 //! -------------|--------------------------------------------------------------------|--------|-------
@@ -86,9 +86,8 @@ pub struct Config {
 }
 
 pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
-    let mut actions = api.get_actions().await?;
-    api.set_default_actions(&[(MouseButton::Left, None, "toggle_format")])
-        .await?;
+    let mut actions = api.get_actions()?;
+    api.set_default_actions(&[(MouseButton::Left, None, "toggle_format")])?;
 
     let mut format = config.format.with_default(" $icon $available ")?;
     let mut format_alt = match &config.format_alt {
@@ -97,11 +96,19 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     };
 
     let unit = match config.alert_unit.as_deref() {
+        // Decimal
         Some("TB") => Some(Prefix::Tera),
         Some("GB") => Some(Prefix::Giga),
         Some("MB") => Some(Prefix::Mega),
         Some("KB") => Some(Prefix::Kilo),
+        // Binary
+        Some("TiB") => Some(Prefix::Tebi),
+        Some("GiB") => Some(Prefix::Gibi),
+        Some("MiB") => Some(Prefix::Mebi),
+        Some("KiB") => Some(Prefix::Kibi),
+        // Byte
         Some("B") => Some(Prefix::One),
+        // Unknown
         Some(x) => return Err(Error::new(format!("Unknown unit: '{x}'"))),
         None => None,
     };
@@ -145,11 +152,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
 
         // Send percentage to alert check if we don't want absolute alerts
         let alert_val_in_config_units = match unit {
-            Some(Prefix::Tera) => result * 1e-12,
-            Some(Prefix::Giga) => result * 1e-9,
-            Some(Prefix::Mega) => result * 1e-6,
-            Some(Prefix::Kilo) => result * 1e-3,
-            Some(_) => result,
+            Some(p) => p.apply(result),
             None => percentage,
         };
 
@@ -175,7 +178,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
             }
         };
 
-        api.set_widget(widget).await?;
+        api.set_widget(widget)?;
 
         loop {
             select! {

@@ -5,6 +5,8 @@ on: [push, pull_request]
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
+    container:
+      image: archlinux
     strategy:
       fail-fast: false
       matrix:
@@ -13,21 +15,28 @@ jobs:
                 check-merge-conflict,
                 check-case-conflict,
                 detect-private-key,
+                mixed-line-ending,
+                trailing-whitespace,
                 cspell,
                 typos,
-                fmt,
-                clippy,
+                cargo-fmt,
+                cargo-clippy,
                 cargo-test,
                 verify_icon_files
               ]
     steps:
-    - name: Get required packages
-      run: sudo apt-get update && sudo apt-get install libsensors-dev libssl-dev libpulse-dev libnotmuch-dev
-    - uses: actions/checkout@v3
-    - uses: actions/setup-python@v4
+    - name: Get required packages and config git
+      run: |
+        pacman --noconfirm --noprogressbar -Syu base-devel clang git libpipewire libpulse lm_sensors notmuch openssl rsync
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+    - uses: actions/setup-python@v5
       with:
         python-version: '3.10'
-    - uses: pre-commit/action@v3.0.0
+    - uses: pre-commit/action@v3.0.1
       with:
         extra_args: ${{ matrix.hook }} --all-files
 

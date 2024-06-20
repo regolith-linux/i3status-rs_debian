@@ -64,7 +64,7 @@ use futures::future::pending;
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     pub format: FormatConfig,
-    // TODO: Document once this option becomes usefull
+    // TODO: Document once this option becomes useful
     #[default(5.into())]
     pub interval: Seconds,
     #[default(10_000)]
@@ -82,14 +82,13 @@ pub struct Config {
 }
 
 pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
-    let mut actions = api.get_actions().await?;
+    let mut actions = api.get_actions()?;
     api.set_default_actions(&[
         (MouseButton::Left, None, "set_click_temp"),
         (MouseButton::Right, None, "reset"),
         (MouseButton::WheelUp, None, "temperature_up"),
         (MouseButton::WheelDown, None, "temperature_down"),
-    ])
-    .await?;
+    ])?;
 
     let format = config.format.with_default(" $temperature ")?;
 
@@ -133,7 +132,7 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
     loop {
         let mut widget = Widget::new().with_format(format.clone());
         widget.set_values(map!("temperature" => Value::number(current_temp)));
-        api.set_widget(widget).await?;
+        api.set_widget(widget)?;
 
         select! {
             update = driver.receive_update() => {
@@ -269,7 +268,7 @@ impl HueShiftDriver for Gammastep {
         Ok(None)
     }
     async fn update(&mut self, temp: u16) -> Result<()> {
-        spawn_shell(&format!("killall gammastep; gammastep -O {temp} -P &",))
+        spawn_shell(&format!("pkill gammastep; gammastep -O {temp} -P &",))
             .error("Failed to set new color temperature using gammastep.")
     }
     async fn reset(&mut self) -> Result<()> {
@@ -304,7 +303,7 @@ impl HueShiftDriver for Wlsunset {
         // night temperature. wlsunset dose not allow for day and night
         // temperatures to be the same, so increment the day temperature.
         spawn_shell(&format!(
-            "killall wlsunset; wlsunset -T {} -t {} &",
+            "pkill wlsunset; wlsunset -T {} -t {} &",
             temp + 1,
             temp
         ))
@@ -319,7 +318,7 @@ impl HueShiftDriver for Wlsunset {
         //     ^ results in sun_condition == POLAR_NIGHT at time of testing
         // With these defaults, this results in the the color temperature
         // getting set to 4000K.
-        spawn_process("killall", &["wlsunset"])
+        spawn_process("pkill", &["wlsunset"])
             .error("Failed to set new color temperature using wlsunset.")
     }
     async fn receive_update(&mut self) -> Result<u16> {
@@ -374,21 +373,21 @@ impl HueShiftDriver for WlGammarelayRs {
     }
 }
 
-#[zbus::dbus_proxy(
+#[zbus::proxy(
     interface = "rs.wl.gammarelay",
     default_service = "rs.wl-gammarelay",
     default_path = "/"
 )]
 trait WlGammarelayRsBus {
     /// Brightness property
-    #[dbus_proxy(property)]
+    #[zbus(property)]
     fn brightness(&self) -> zbus::Result<f64>;
-    #[dbus_proxy(property)]
+    #[zbus(property)]
     fn set_brightness(&self, value: f64) -> zbus::Result<()>;
 
     /// Temperature property
-    #[dbus_proxy(property)]
+    #[zbus(property)]
     fn temperature(&self) -> zbus::Result<u16>;
-    #[dbus_proxy(property)]
+    #[zbus(property)]
     fn set_temperature(&self, value: u16) -> zbus::Result<()>;
 }
