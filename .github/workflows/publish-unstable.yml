@@ -51,7 +51,7 @@ jobs:
         id: build
         uses: regolith-linux/actions/build-package@main
         with:
-          name: "i3status-rs"
+          name: "${{ github.event.repository.name }}"
           distro: "${{ matrix.distro }}"
           codename: "${{ matrix.codename }}"
           stage: "unstable"
