@@ -1,3 +1,15 @@
+i3status-rs (0.22.2-1) focal; urgency=medium
+
+  [ Khosrow Moossavi ]
+  * feat: enable github action to test pull requests
+  * feat: enable github action to publish to unstable
+  * feat: enable github action to publish to testing
+  * feat: enable github action to prepare release
+  * fix: use full repository name only for building packages
+  * fix: create release tag from correct git sha
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Tue, 04 Feb 2025 14:14:53 +0000
+
 i3status-rs (0.22.1-1) focal; urgency=medium
 
   * fix: disable battery to avoid global error on bar on targets without batteries on jammy
