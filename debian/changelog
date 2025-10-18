@@ -1,3 +1,10 @@
+i3status-rs (0.32.1-2) mantic; urgency=medium
+
+  [ Khosrow Moossavi ]
+  * feat: use build-only to test pull request
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Sat, 18 Oct 2025 18:29:19 +0000
+
 i3status-rs (0.32.1-1) mantic; urgency=medium
 
   [ Khosrow Moossavi ]
