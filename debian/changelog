@@ -1,3 +1,10 @@
+i3status-rs (0.22.2-2) focal; urgency=medium
+
+  [ Khosrow Moossavi ]
+  * feat: use build-only to test pull request
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Sat, 18 Oct 2025 18:34:30 +0000
+
 i3status-rs (0.22.2-1) focal; urgency=medium
 
   [ Khosrow Moossavi ]
