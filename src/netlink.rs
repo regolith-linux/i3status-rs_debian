@@ -442,13 +442,14 @@ async fn read_nameservers() -> Result<Vec<IpAddr>> {
     for line in file.lines() {
         let mut line_parts = line.split_whitespace();
         if line_parts.next() == Some("nameserver")
-            && let Some(mut ip) = line_parts.next() {
-                // TODO: use the zone id somehow?
-                if let Some((without_zone_id, _zone_id)) = ip.split_once('%') {
-                    ip = without_zone_id;
-                }
-                nameservers.push(ip.parse().error("Unable to parse ip")?);
+            && let Some(mut ip) = line_parts.next()
+        {
+            // TODO: use the zone id somehow?
+            if let Some((without_zone_id, _zone_id)) = ip.split_once('%') {
+                ip = without_zone_id;
             }
+            nameservers.push(ip.parse().error("Unable to parse ip")?);
+        }
     }
 
     Ok(nameservers)

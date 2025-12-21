@@ -117,9 +117,10 @@ impl Geolocator {
         {
             let guard = self.last_autolocate.lock().unwrap();
             if let Some(cached) = &*guard
-                && cached.timestamp.elapsed() < interval {
-                    return Ok(cached.location.clone());
-                }
+                && cached.timestamp.elapsed() < interval
+            {
+                return Ok(cached.location.clone());
+            }
         }
 
         let location = self.backend.get_info(client).await?;
