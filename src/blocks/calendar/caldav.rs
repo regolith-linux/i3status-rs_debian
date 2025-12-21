@@ -276,8 +276,8 @@ fn parse_calendars(
                 _ => {}
             }
         }
-        if is_calendar && supports_events {
-            if let Some(name) = name {
+        if is_calendar && supports_events
+            && let Some(name) = name {
                 result.push(Calendar {
                     name,
                     url: base_url
@@ -285,7 +285,6 @@ fn parse_calendars(
                         .map_err(|_| CalendarError::Parsing("Malformed calendar url".into()))?,
                 });
             }
-        }
     }
     Ok(result)
 }

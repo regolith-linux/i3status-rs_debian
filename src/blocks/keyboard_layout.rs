@@ -140,11 +140,10 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
         } = backend.get_info().await?;
 
         let variant = variant.unwrap_or_else(|| "N/A".into());
-        if let Some(mappings) = &config.mappings {
-            if let Some(mapped) = mappings.get(&format!("{layout} ({variant})")) {
+        if let Some(mappings) = &config.mappings
+            && let Some(mapped) = mappings.get(&format!("{layout} ({variant})")) {
                 layout.clone_from(mapped);
             }
-        }
 
         let mut widget = Widget::new().with_format(format.clone());
         widget.set_values(map! {
