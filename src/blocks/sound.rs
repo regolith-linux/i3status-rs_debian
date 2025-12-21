@@ -255,8 +255,8 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
             }
             None => (),
         }
-        if let Some(ap) = &active_port {
-            if let Some((regex, mapped)) = config
+        if let Some(ap) = &active_port
+            && let Some((regex, mapped)) = config
                 .active_port_mappings
                 .iter()
                 .find(|(regex, _)| regex.0.is_match(ap))
@@ -268,7 +268,6 @@ pub async fn run(config: &Config, api: &CommonApi) -> Result<()> {
                     active_port = Some(mapped.into_owned());
                 }
             }
-        }
 
         let output_description = device
             .output_description()

@@ -93,8 +93,8 @@ pub fn events_stream(
         let mut event = events.next().await?;
 
         // Handle double clicks (for now only left)
-        if event.button == MouseButton::Left && !double_click_delay.is_zero() {
-            if let Ok(new_event) = tokio::time::timeout(double_click_delay, events.next()).await {
+        if event.button == MouseButton::Left && !double_click_delay.is_zero()
+            && let Ok(new_event) = tokio::time::timeout(double_click_delay, events.next()).await {
                 let new_event = new_event?;
                 if event == new_event {
                     event.button = MouseButton::DoubleLeft;
@@ -102,7 +102,6 @@ pub fn events_stream(
                     return Some((event, (events, Some(new_event))));
                 }
             }
-        }
 
         Some((event, (events, None)))
     })
