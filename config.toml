@@ -31,6 +31,9 @@ driver = "upower"
 
 [[block]]
 block = "rofication"
+# Only while Rofication is installed: without its daemon the block shows
+# "Failed to connect to socket". Checked when the bar starts.
+if_command = "command -v rofication-daemon"
 interval = 1
 socket_path = "/tmp/rofi_notification_daemon"
 [[block.click]]
