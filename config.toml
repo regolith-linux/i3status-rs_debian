@@ -41,8 +41,12 @@ socket_path = "/tmp/rofi_notification_daemon"
 block = "sound"
 driver = "pulseaudio"
 
+# Date and time, chosen like the X11 session's bar: the time follows
+# Settings > Date & Time > Time Format (12h/24h), and the Xresource
+# i3xrocks.date.format2 (a date(1) format) replaces both when it is set.
 [[block]]
-block = "time"
+block = "custom"
+command = "/usr/libexec/i3status-rs/regolith-bar-time datetime '%d/%m'"
+json = true
 interval = 5
-format = "%d/%m %R"
 
