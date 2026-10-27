@@ -7,3 +7,9 @@
 
 %:
 	dh $@
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	sh debian/test-regolith-bar-time
+endif
+	dh_auto_test
