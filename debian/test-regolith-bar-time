@@ -1,0 +1,83 @@
+#!/bin/sh
+# Checks debian/regolith-bar-time with stand-ins for date, gsettings, trawlcat
+# and xrescat. Run at build time from debian/rules.
+set -u
+
+script=$(dirname "$0")/regolith-bar-time
+stubs=$(mktemp -d)
+trap 'rm -rf "$stubs"' EXIT
+failures=0
+
+# A fixed clock: 2023-11-14 22:13:20 UTC, a Tuesday.
+real_date=$(command -v date)
+cat > "$stubs/date" << STUB
+#!/bin/sh
+exec env TZ=UTC LC_ALL=C "$real_date" -d @1700000000 "\$@"
+STUB
+
+# setup CLOCK_FORMAT TRAWL XRES: a value of "-" leaves the command out.
+setup() {
+    rm -f "$stubs/gsettings" "$stubs/trawlcat" "$stubs/xrescat"
+    if [ "$1" = fail ]; then
+        printf '#!/bin/sh\nexit 1\n' > "$stubs/gsettings"
+    else
+        printf '#!/bin/sh\necho "%s"\n' "'$1'" > "$stubs/gsettings"
+    fi
+    if [ "$2" != - ]; then
+        printf '#!/bin/sh\n[ "$1" = i3xrocks.date.format2 ] && printf "%%s\\n" %s\n' "'$2'" > "$stubs/trawlcat"
+    fi
+    if [ "$3" != - ]; then
+        printf '#!/bin/sh\n[ "$1" = i3xrocks.date.format2 ] && printf "%%s\\n" %s\n' "'$3'" > "$stubs/xrescat"
+    fi
+    chmod +x "$stubs"/*
+}
+
+check() {
+    name=$1 expected=$2
+    shift 2
+    actual=$(PATH="$stubs:/usr/bin:/bin" sh "$script" "$@")
+    if [ "$actual" = "$expected" ]; then
+        echo "ok: $name"
+    else
+        echo "FAIL: $name"
+        echo "  expected: $expected"
+        echo "  actual:   $actual"
+        failures=$((failures + 1))
+    fi
+}
+
+setup 24h - -
+check '24h: date' '{"icon":"","text":"Tue-14/11/23"}' date '%a-%d/%m/%y'
+check '24h: time' '{"icon":"time","text":"22:13"}' time
+check '24h: datetime' '{"icon":"time","text":"14/11 22:13"}' datetime '%d/%m'
+check 'no mode: time' '{"icon":"time","text":"22:13"}'
+
+setup 12h - -
+check '12h: time' '{"icon":"time","text":"10:13"}' time
+check '12h: datetime' '{"icon":"time","text":"14/11 10:13"}' datetime '%d/%m'
+check '12h: date unchanged' '{"icon":"","text":"Tue-14/11/23"}' date '%a-%d/%m/%y'
+
+setup fail - -
+check 'no clock-format: 24h' '{"icon":"time","text":"22:13"}' time
+
+setup 12h '%Y-%m-%d %H:%M' -
+check 'trawl resource: date hidden' '{"icon":"","text":""}' date '%a-%d/%m/%y'
+check 'trawl resource: time' '{"icon":"time","text":"2023-11-14 22:13"}' time
+check 'trawl resource: datetime' '{"icon":"time","text":"2023-11-14 22:13"}' datetime '%d/%m'
+
+setup 24h '' '%H:%M:%S'
+check 'empty trawl value, xrescat resource' '{"icon":"time","text":"22:13:20"}' time
+
+setup 24h - '%a %H:%M'
+check 'xrescat only' '{"icon":"time","text":"Tue 22:13"}' time
+
+setup 24h 'say "%H"\%n%M' -
+check 'quotes, backslash and newline are escaped' '{"icon":"time","text":"say \"22\"\\ 13"}' time
+
+setup 24h '%H<%M> & %%' -
+check 'Pango markup characters are left to the bar' '{"icon":"time","text":"22<13> & %"}' time
+
+if [ "$failures" -ne 0 ]; then
+    echo "$failures check(s) failed"
+    exit 1
+fi
