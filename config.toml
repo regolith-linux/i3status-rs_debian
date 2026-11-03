@@ -4,6 +4,21 @@ theme = "semi-native"
 [icons]
 icons = "awesome4"
 
+# The active keyboard layout, updated as soon as it changes, as the
+# keyboard-layout blocklet shows it in the X11 session. A left click opens
+# the keyboard settings, where input sources are added and removed.
+[[block]]
+block = "keyboard_layout"
+# Only with a keyboard that has a layout: without one (a headless or remote
+# session) the block shows "Failed to get current input". Checked when the
+# bar starts.
+if_command = "swaymsg -t get_inputs -r | grep -q '\"xkb_active_layout_name\": *\"'"
+driver = "sway"
+format = " \uf11c $layout "
+[[block.click]]
+button = "left"
+cmd = "regolith-control-center keyboard"
+
 [[block]]
 block = "net"
 
