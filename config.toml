@@ -45,4 +45,5 @@ driver = "pulseaudio"
 block = "time"
 interval = 5
 format = "%d/%m %R"
+on_click = "regolith-control-center datetime"
 
