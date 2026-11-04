@@ -140,12 +140,12 @@ impl Block<'_> {
                 }
                 let left = task_len - elapsed;
                 let text = if pomodoro == 0 {
-                    format!("{} min", (left.as_secs() + 59) / 60,)
+                    format!("{} min", left.as_secs().div_ceil(60),)
                 } else {
                     format!(
                         "{} {} min",
                         "|".repeat(pomodoro as usize),
-                        (left.as_secs() + 59) / 60,
+                        left.as_secs().div_ceil(60),
                     )
                 };
                 self.set_text(text).await?;
@@ -185,7 +185,7 @@ impl Block<'_> {
                     break;
                 }
                 let left = break_len - elapsed;
-                self.set_text(format!("Break: {} min", (left.as_secs() + 59) / 60,))
+                self.set_text(format!("Break: {} min", left.as_secs().div_ceil(60),))
                     .await?;
                 select! {
                     _ = sleep(Duration::from_secs(10)) => (),

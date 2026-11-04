@@ -477,7 +477,8 @@ impl Formatter for EngFormatter {
 }
 
 #[derive(Debug)]
-pub struct FixFormatter(EngFixConfig);
+// The configuration is parsed and kept for when 'fix' is implemented.
+pub struct FixFormatter(#[allow(dead_code)] EngFixConfig);
 
 impl Formatter for FixFormatter {
     fn format(&self, val: &Value, _config: &SharedConfig) -> Result<String> {

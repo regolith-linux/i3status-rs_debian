@@ -1,1 +1,3 @@
 type-complexity-threshold = 300
+# The oldest toolchain that builds the package: rustc 1.75 on Ubuntu 24.04.
+msrv = "1.75"
