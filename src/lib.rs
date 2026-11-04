@@ -2,6 +2,8 @@
 #![warn(clippy::semicolon_if_nothing_returned)]
 #![warn(clippy::unnecessary_wraps)]
 #![allow(clippy::single_match)]
+// #[async_trait] 0.1.73 marks the boxed futures it returns #[must_use].
+#![allow(clippy::double_must_use)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[macro_use]
