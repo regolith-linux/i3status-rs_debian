@@ -48,12 +48,15 @@ impl Backend for Sway {
 
     async fn wait_for_change(&mut self) -> Result<()> {
         loop {
-            let event = self
-                .events
-                .next()
-                .await
-                .error("swayipc channel closed")?
-                .error("bad event")?;
+            let event = match self.events.next().await.error("swayipc channel closed")? {
+                Ok(event) => event,
+                // sway reports a virtual keyboard that brings its own keymap
+                // (wtype, a remote desktop) with null layout names, which this
+                // version of swayipc can't read. That keyboard isn't the one
+                // shown, so skip its events rather than fail the block.
+                Err(swayipc_async::Error::SerdeJson(_)) => continue,
+                Err(e) => return Err(e).error("bad event"),
+            };
             if let Event::Input(event) = event {
                 if self
                     .kbd
