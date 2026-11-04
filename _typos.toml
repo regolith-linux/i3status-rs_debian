@@ -7,6 +7,8 @@
 files.extend-exclude = [
     "target/",
     "man/*",
+    # past entries of the Debian changelog are not rewritten
+    "debian/changelog",
 ]
 
 # Identifiers are defined using unicode's XID_Continue which includes [a-zA-Z0-9_].
@@ -24,3 +26,5 @@ BA = "BA"
 # typos thinks this should be "sought"
 seeked = "seeked"
 
+# an input of the release action in .github/workflows/prepare-release.yml
+commitish = "commitish"

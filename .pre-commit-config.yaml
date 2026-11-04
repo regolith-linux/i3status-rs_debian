@@ -34,6 +34,8 @@ repos:
     hooks:
     - id: typos
       args: [] # this prevents typos from being autocorrected (so you have a chance to review them)
+      # past entries of the Debian changelog are not rewritten
+      exclude: ^debian/changelog$
   - repo: https://github.com/doublify/pre-commit-rust
     rev: v1.0
     hooks:
