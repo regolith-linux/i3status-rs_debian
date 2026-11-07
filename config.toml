@@ -22,6 +22,12 @@ cmd = "regolith-control-center keyboard"
 [[block]]
 block = "net"
 
+# CPU usage, also shown by the X11 session's bar
+[[block]]
+block = "cpu"
+interval = 5
+format = " $icon $utilization.eng(w:2) "
+
 [[block]]
 block = "disk_space"
 path = "/"
@@ -39,6 +45,9 @@ format_alt = " $icon_swap $swap_used_percents.eng(w:2) "
 
 [[block]]
 block = "battery"
+# Only on machines with a battery: without one, UPower's DisplayDevice still
+# exists and the block shows an empty red battery. Checked when the bar starts.
+if_command = "upower --enumerate | grep -q /battery_"
 format = " $icon\u2009 $percentage "
 missing_format = ""
 device = "DisplayDevice"
