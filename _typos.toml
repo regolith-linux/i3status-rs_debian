@@ -8,6 +8,8 @@
 extend-exclude = [
     "cspell.yaml",
     "target/",
+    # past entries of the Debian changelog are not rewritten
+    "debian/changelog",
 ]
 
 # Identifiers are defined using unicode's XID_Continue which includes [a-zA-Z0-9_].
