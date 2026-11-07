@@ -6,6 +6,8 @@ ignorePaths:
   - target/
   - src/blocks/weather/met_no_legends.json
   - testdata/
+  # Debian packaging: maintainer names and past changelog entries
+  - debian/
 ignoreRegExpList:
   # Ignore usernames that are @'d
   - /@[\w-]*/g
@@ -100,6 +102,7 @@ words:
   - ipapi
   - itertools
   - iwctl
+  - kamatera
   - kbdd
   - kbddbus
   - kibi
@@ -191,6 +194,7 @@ words:
   - statusrs
   - statvfs
   - stdbuf
+  - stefanzweifel
   - strftime
   - swayipc
   - swaync
@@ -209,6 +213,7 @@ words:
   - vals
   - VCALENDAR
   - VEVENT
+  - voulage
   - wayrs
   - wdoll
   - wdth

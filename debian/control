@@ -10,5 +10,5 @@ Package: i3status-rs
 Architecture: any
 Multi-Arch: foreign
 Depends: ${misc:Depends}, ${shlibs:Depends}
-Description: Very resourcefriendly and feature-rich 
- replacement for i3status, written in pure Rust 
+Description: Very resourcefriendly and feature-rich
+ replacement for i3status, written in pure Rust
