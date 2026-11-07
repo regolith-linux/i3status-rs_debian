@@ -1,3 +1,12 @@
+i3status-rs (0.40.0-1) resolute; urgency=medium
+
+  * New upstream release 0.40.0
+  * Build with cargo and rustc 1.88 or newer, cmake, git and libclang-dev;
+    drop libssl-dev and libdbus-1-dev
+  * Take runtime dependencies from shlibs only
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Sat, 07 Nov 2026 16:30:51 +0000
+
 i3status-rs (0.32.1-2) mantic; urgency=medium
 
   [ Khosrow Moossavi ]
