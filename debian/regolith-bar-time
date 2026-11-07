@@ -1,0 +1,65 @@
+#!/bin/sh
+# Date and time for the bar of the Regolith Wayland session, chosen the way
+# the X11 session's bar (the i3xrocks time blocklet) chooses them:
+#
+# - If the Xresource i3xrocks.date.format2 is set, its value is a date(1)
+#   format (without the leading +) that replaces the date and the time.
+# - Otherwise the time follows Settings > Date & Time > Time Format
+#   (org.gnome.desktop.interface clock-format): %I:%M for 12h, %H:%M for 24h.
+#
+# Prints one JSON object for an i3status-rs "custom" block with json = true.
+#
+#   regolith-bar-time date FORMAT
+#       the date in FORMAT; empty while the Xresource is set
+#   regolith-bar-time time
+#       the time, or the date and time in the Xresource's format
+#   regolith-bar-time datetime FORMAT
+#       the date in FORMAT followed by the time, or the Xresource's format
+#       (for configurations with a single block)
+
+mode=${1:-time}
+date_format=${2:-%d/%m}
+
+resource=""
+if command -v trawlcat > /dev/null 2>&1; then
+    resource=$(trawlcat i3xrocks.date.format2 2> /dev/null) || resource=""
+fi
+if [ -z "$resource" ] && command -v xrescat > /dev/null 2>&1; then
+    resource=$(xrescat i3xrocks.date.format2 2> /dev/null) || resource=""
+fi
+
+case $(gsettings get org.gnome.desktop.interface clock-format 2> /dev/null) in
+    "'12h'") time_format="%I:%M" ;;
+    *) time_format="%H:%M" ;;
+esac
+
+icon=""
+case $mode in
+    date)
+        if [ -n "$resource" ]; then
+            text=""
+        else
+            text=$(date "+$date_format")
+        fi
+        ;;
+    datetime)
+        icon="time"
+        if [ -n "$resource" ]; then
+            text=$(date "+$resource")
+        else
+            text=$(date "+$date_format $time_format")
+        fi
+        ;;
+    *)
+        icon="time"
+        if [ -n "$resource" ]; then
+            text=$(date "+$resource")
+        else
+            text=$(date "+$time_format")
+        fi
+        ;;
+esac
+
+# JSON string: escape backslashes and quotes, turn control characters into spaces.
+text=$(printf '%s' "$text" | tr '\000-\037' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')
+printf '{"icon":"%s","text":"%s"}\n' "$icon" "$text"
