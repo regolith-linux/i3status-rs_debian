@@ -45,10 +45,8 @@ format_alt = " $icon_swap $swap_used_percents.eng(w:2) "
 
 [[block]]
 block = "battery"
-# Only on machines with a battery: without one, UPower's DisplayDevice still
-# exists and the block shows an empty red battery. Checked when the bar starts.
-if_command = "upower --enumerate | grep -q /battery_"
 format = " $icon\u2009 $percentage "
+# Hidden while there is no battery, e.g. on a desktop or after UPower stops
 missing_format = ""
 device = "DisplayDevice"
 driver = "upower"
