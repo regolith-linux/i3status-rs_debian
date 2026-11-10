@@ -95,7 +95,19 @@ where
     let contents = std::fs::read_to_string(path)
         .or_error(|| format!("Failed to read file: {}", path.display()))?;
 
-    toml::from_str(&contents).map_err(|err| {
+    self::deserialize_toml(&contents, Some(path))
+}
+
+pub fn deserialize_toml<T>(contents: &String, file_path: Option<&Path>) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let source = match file_path {
+        Some(msg) => msg.display().to_string(),
+        _ => String::from("(from stdin)"),
+    };
+
+    toml::from_str(contents).map_err(|err| {
         #[allow(deprecated)]
         let location_msg = err
             .span()
@@ -109,7 +121,7 @@ where
             .unwrap_or_default();
         Error::new(format!(
             "Failed to deserialize TOML file {}{}: {}",
-            path.display(),
+            source,
             location_msg,
             err.message()
         ))
