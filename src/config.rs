@@ -11,6 +11,8 @@ use crate::geolocator::Geolocator;
 use crate::icons::{Icon, Icons};
 use crate::themes::{Theme, ThemeOverrides, ThemeUserConfig};
 
+pub mod fragments;
+
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Config {

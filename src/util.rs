@@ -111,11 +111,7 @@ where
                 if span == (0..0) {
                     String::new()
                 } else {
-                    let line = 1 + contents.as_bytes()[..(span.start)]
-                        .iter()
-                        .filter(|b| **b == b'\n')
-                        .count();
-                    format!(" at line {line}")
+                    format!(" at line {}", line_number(&contents, span.start))
                 }
             })
             .unwrap_or_default();
@@ -126,6 +122,14 @@ where
             err.message()
         ))
     })
+}
+
+/// The 1-based number of the line of `text` that holds byte `offset`.
+pub(crate) fn line_number(text: &str, offset: usize) -> usize {
+    1 + text.as_bytes()[..offset]
+        .iter()
+        .filter(|b| **b == b'\n')
+        .count()
 }
 
 pub async fn read_file(path: impl AsRef<Path>) -> std::io::Result<String> {
@@ -363,6 +367,15 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn line_number_counts_from_one() {
+        let text = "a = 1\nb = [\n\nc";
+        assert_eq!(line_number(text, 0), 1);
+        assert_eq!(line_number(text, 5), 1);
+        assert_eq!(line_number(text, 6), 2);
+        assert_eq!(line_number(text, text.len()), 4);
     }
 
     #[test]

@@ -1,0 +1,11 @@
+[[block]]
+id = "battery"
+block = "battery"
+format = " $icon\u2009 $percentage "
+# Hidden while there is no battery, e.g. on a desktop or after UPower stops
+missing_format = ""
+device = "DisplayDevice"
+driver = "upower"
+[[block.click]]
+button = "left"
+cmd = "regolith-control-center power"

@@ -1,0 +1,6 @@
+# CPU usage, also shown by the X11 session's bar
+[[block]]
+id = "cpu-usage"
+block = "cpu"
+interval = 5
+format = " $icon $utilization.eng(w:2) "
