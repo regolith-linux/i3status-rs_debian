@@ -2,3 +2,4 @@ target/release/i3status-rs /usr/bin/
 config.toml /etc/regolith/i3status-rust/
 files/* /usr/share/i3status-rust/
 debian/regolith-bar-time /usr/libexec/i3status-rs/
+conf.d/*.toml /usr/share/regolith/i3status-rust/conf.d/

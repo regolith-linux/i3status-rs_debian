@@ -1,0 +1,8 @@
+[[block]]
+id = "volume"
+block = "sound"
+driver = "pulseaudio"
+
+[[block.click]]
+button = "left"
+cmd = "regolith-control-center sound"
