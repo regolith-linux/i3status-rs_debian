@@ -1,3 +1,11 @@
+i3status-rs (0.40.0-3) resolute; urgency=medium
+
+  [ rego-port-bot ]
+  * fix(battery): handle absent batteries and UPower restarts
+  * fix: hide the battery block through missing_format
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Fri, 13 Nov 2026 16:07:12 -0800
+
 i3status-rs (0.40.0-2) resolute; urgency=medium
 
   * feat: show the same blocks as the X11 bar
