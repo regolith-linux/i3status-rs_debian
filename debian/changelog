@@ -1,3 +1,10 @@
+i3status-rs (0.40.0-4) resolute; urgency=medium
+
+  [ rego-port-bot ]
+  * fix(debian): replace the dh_make placeholders in Section and Homepage
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Sat, 14 Nov 2026 11:02:12 -0800
+
 i3status-rs (0.40.0-3) resolute; urgency=medium
 
   [ rego-port-bot ]
