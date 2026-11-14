@@ -1,3 +1,11 @@
+i3status-rs (0.22.2-3) focal; urgency=medium
+
+  [ rego-port-bot ]
+  * fix: hide the rofication block when Rofication is not installed
+  * feat: open Settings > Date & Time from the clock (v0.22)
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Fri, 13 Nov 2026 16:01:22 -0800
+
 i3status-rs (0.22.2-2) focal; urgency=medium
 
   [ Khosrow Moossavi ]
