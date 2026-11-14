@@ -1,3 +1,20 @@
+i3status-rs (0.32.1-3) mantic; urgency=medium
+
+  [ rego-port-bot ]
+  * fix: hide the rofication block when Rofication is not installed
+  * feat: show the keyboard layout in the sway bar
+  * feat: open Settings from the battery, date and time blocks
+  * fix(keyboard_layout): skip sway events for virtual keyboards
+  * chore: keep debian/ out of the spell checkers
+  * style: format bluetooth.rs with rustfmt
+  * chore: keep debian/ out of the spell checkers
+  * fix: address clippy findings of current Rust
+  * style: format bluetooth.rs with rustfmt
+  * chore: add wtype to the cspell words
+  * fix: address clippy findings of current Rust
+
+ -- Regolith Linux <regolith.linux@gmail.com>  Fri, 13 Nov 2026 16:04:18 -0800
+
 i3status-rs (0.32.1-2) mantic; urgency=medium
 
   [ Khosrow Moossavi ]
