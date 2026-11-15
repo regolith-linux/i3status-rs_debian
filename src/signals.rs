@@ -1,6 +1,6 @@
 use futures::stream::StreamExt as _;
 use libc::{SIGRTMAX, SIGRTMIN};
-use signal_hook::consts::{SIGUSR1, SIGUSR2};
+use signal_hook::consts::{SIGHUP, SIGUSR1, SIGUSR2};
 use signal_hook_tokio::Signals;
 
 use crate::BoxedStream;
@@ -23,4 +23,9 @@ pub fn signals_stream() -> BoxedStream<Signal> {
             x => Signal::Custom(x - sigmin),
         })
         .boxed()
+}
+
+/// Returns an infinite stream that yields whenever the process receives SIGHUP
+pub fn hangups_stream() -> BoxedStream<()> {
+    Signals::new([SIGHUP]).unwrap().map(|_| ()).boxed()
 }

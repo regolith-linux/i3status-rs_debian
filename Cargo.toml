@@ -29,7 +29,7 @@ features = ["maildir", "notmuch"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [workspace.dependencies]
-clap = { version = "4.0", default-features = false, features = ["std", "derive", "help", "usage"] }
+clap = { version = "4.0", default-features = false, features = ["std", "derive", "error-context", "help", "usage"] }
 
 [dependencies]
 async-trait = "0.1"

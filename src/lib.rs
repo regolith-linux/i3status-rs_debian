@@ -39,17 +39,19 @@ pub use serde_json;
 pub use tokio;
 
 use std::borrow::Cow;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use futures::Stream;
-use futures::stream::{FuturesUnordered, StreamExt as _};
+use futures::stream::{FuturesUnordered, SelectAll, StreamExt as _};
 use tokio::process::Command;
 use tokio::sync::{Notify, mpsc};
 
 use crate::blocks::{BlockAction, BlockError, CommonApi, RESTART_BLOCK_BTN};
 use crate::click::{ClickHandler, MouseButton};
+use crate::config::fragments::FragmentDirs;
 use crate::config::{BlockConfigEntry, Config, SharedConfig};
 use crate::errors::*;
 use crate::formatting::value::Value;
@@ -100,8 +102,38 @@ pub struct CliArgs {
     /// 3. Then look for it in `$XDG_DATA_HOME/i3status-rust`
     ///
     /// 4. Otherwise look for it in `/usr/share/i3status-rust`
-    #[clap(default_value = "config.toml")]
+    ///
+    /// Cannot be combined with --conf-dir or --user-conf-dir.
+    #[clap(default_value = "config.toml", conflicts_with_all = ["conf_dir", "user_conf_dir"])]
     pub config: String,
+    /// Build the configuration from the TOML fragments in this directory,
+    /// the ones that packages ship, instead of reading a config file
+    ///
+    /// Fragments are files named `*.toml`. Settings merge in the byte order
+    /// of the file names, and a `[[block]]` with an `id` key changes,
+    /// moves, replaces or (with `remove = true`) removes the block with
+    /// that `id` from an earlier fragment. A fragment that cannot be used
+    /// is skipped and reported. The bar reads the fragments again when they
+    /// change and on SIGHUP or SIGUSR2.
+    #[clap(
+        long = "conf-dir",
+        short = 'd',
+        value_name = "DIR",
+        conflicts_with = "doctor"
+    )]
+    pub conf_dir: Option<PathBuf>,
+    /// Build the configuration from the TOML fragments in this directory,
+    /// the user's own, as well as from those in --conf-dir
+    ///
+    /// A fragment here takes the place of the --conf-dir fragment with the
+    /// same file name: an empty one, or a link to /dev/null, masks it.
+    #[clap(
+        long = "user-conf-dir",
+        short = 'u',
+        value_name = "DIR",
+        conflicts_with = "doctor"
+    )]
+    pub user_conf_dir: Option<PathBuf>,
     /// Ignore any attempts by i3 to pause the bar when hidden/fullscreen
     #[clap(long = "never-pause")]
     pub never_pause: bool,
@@ -138,6 +170,15 @@ pub struct CliArgs {
     pub blocking_threads: usize,
 }
 
+impl CliArgs {
+    /// The fragment directories, when the configuration comes from them
+    /// rather than from a config file.
+    pub fn fragment_dirs(&self) -> Option<FragmentDirs> {
+        (self.conf_dir.is_some() || self.user_conf_dir.is_some())
+            .then(|| FragmentDirs::new(self.conf_dir.clone(), self.user_conf_dir.clone()))
+    }
+}
+
 pub struct BarState {
     config: Config,
 
@@ -154,6 +195,7 @@ pub struct BarState {
     widget_updates_stream: BoxedStream<Vec<usize>>,
     signals_stream: BoxedStream<Signal>,
     events_stream: BoxedStream<I3BarEvent>,
+    restart_requests: SelectAll<BoxedStream<()>>,
 }
 
 #[derive(Debug)]
@@ -276,9 +318,45 @@ impl BarState {
                 config.invert_scrolling,
                 Duration::from_millis(config.double_click_delay),
             ),
+            restart_requests: SelectAll::new(),
 
             config,
         }
+    }
+
+    /// Makes the bar restart whenever `requests` yields.
+    pub fn restart_on(&mut self, requests: impl Stream<Item = ()> + 'static) {
+        self.restart_requests.push(requests.boxed_local());
+    }
+
+    /// Adds a block that only ever shows `widget`. `name` names the block
+    /// in error messages. The widget shows from the first status line on.
+    pub fn add_static_block(&mut self, name: &'static str, widget: Widget) {
+        let id = self.blocks.len();
+        self.blocks.push(Block {
+            id,
+            name,
+
+            update_request: Arc::new(Notify::new()),
+            action_sender: None,
+
+            click_handler: ClickHandler::default(),
+            default_actions: &[],
+            signal: None,
+            shared_config: self.config.shared.clone(),
+
+            error_outputs: block_plan::error_outputs(
+                self.config.error_format.clone().into(),
+                self.config.error_fullscreen_format.clone().into(),
+                false,
+            ),
+
+            state: BlockState::Normal { widget },
+        });
+        self.blocks_render_cache.push(RenderedBlock {
+            segments: Vec::new(),
+            merge_with_next: false,
+        });
     }
 
     pub async fn spawn_block(&mut self, block_config: BlockConfigEntry) -> Result<()> {
@@ -504,12 +582,28 @@ impl BarState {
                         }
                     }
                 }
-            }
+            },
+            // Handle restart requests
+            Some(()) = self.restart_requests.next() => restart(),
         }
         Ok(())
     }
 
     pub async fn run_event_loop(mut self, restart: fn() -> !) -> Result<(), BlockError> {
+        // Static blocks never report their widgets: render them now.
+        for id in 0..self.blocks.len() {
+            self.render_block(id)?;
+        }
+        // The bar prints whenever a block reports. With no block left to
+        // report, print now: otherwise the status line shown before a
+        // restart would stay.
+        if self
+            .blocks
+            .iter()
+            .all(|block| !matches!(block.state, BlockState::None))
+        {
+            self.render();
+        }
         loop {
             if let Err(error) = self.process_event(restart).await {
                 let block = &mut self.blocks[error.block_id];
