@@ -5,7 +5,10 @@
 # - If the Xresource i3xrocks.date.format2 is set, its value is a date(1)
 #   format (without the leading +) that replaces the date and the time.
 # - Otherwise the time follows Settings > Date & Time > Time Format
-#   (org.gnome.desktop.interface clock-format): %I:%M for 12h, %H:%M for 24h.
+#   (org.gnome.desktop.interface clock-format): %I:%M %p for 12h, %H:%M for
+#   24h. %p is AM or PM: without it 00:02 and 12:02 both read 12:02. In a
+#   locale with no AM/PM strings %p is empty, and the space before it is
+#   dropped.
 #
 # Prints one JSON object for an i3status-rs "custom" block with json = true.
 #
@@ -29,7 +32,7 @@ if [ -z "$resource" ] && command -v xrescat > /dev/null 2>&1; then
 fi
 
 case $(gsettings get org.gnome.desktop.interface clock-format 2> /dev/null) in
-    "'12h'") time_format="%I:%M" ;;
+    "'12h'") time_format="%I:%M %p" ;;
     *) time_format="%H:%M" ;;
 esac
 
@@ -47,7 +50,7 @@ case $mode in
         if [ -n "$resource" ]; then
             text=$(date "+$resource")
         else
-            text=$(date "+$date_format $time_format")
+            text=$(date "+$date_format $time_format" | sed 's/ *$//')
         fi
         ;;
     *)
@@ -55,7 +58,7 @@ case $mode in
         if [ -n "$resource" ]; then
             text=$(date "+$resource")
         else
-            text=$(date "+$time_format")
+            text=$(date "+$time_format" | sed 's/ *$//')
         fi
         ;;
 esac

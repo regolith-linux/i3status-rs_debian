@@ -8,12 +8,28 @@ stubs=$(mktemp -d)
 trap 'rm -rf "$stubs"' EXIT
 failures=0
 
-# A fixed clock: 2023-11-14 22:13:20 UTC, a Tuesday.
+# clock SECONDS [no-ampm]: date reports a fixed time, in seconds since the
+# epoch, in UTC and the C locale. With no-ampm, %p is dropped from the format,
+# as in a locale with no AM/PM strings.
 real_date=$(command -v date)
-cat > "$stubs/date" << STUB
+clock() {
+    if [ "${2:-}" = no-ampm ]; then
+        cat > "$stubs/date" << STUB
 #!/bin/sh
-exec env TZ=UTC LC_ALL=C "$real_date" -d @1700000000 "\$@"
+format=\$(printf '%s' "\$1" | sed 's/%p//g')
+exec env TZ=UTC LC_ALL=C "$real_date" -d @$1 "\$format"
 STUB
+    else
+        cat > "$stubs/date" << STUB
+#!/bin/sh
+exec env TZ=UTC LC_ALL=C "$real_date" -d @$1 "\$@"
+STUB
+    fi
+    chmod +x "$stubs/date"
+}
+
+# 2023-11-14 22:13:20 UTC, a Tuesday.
+clock 1700000000
 
 # setup CLOCK_FORMAT TRAWL XRES: a value of "-" leaves the command out.
 setup() {
@@ -53,8 +69,8 @@ check '24h: datetime' '{"icon":"time","text":"14/11 22:13"}' datetime '%d/%m'
 check 'no mode: time' '{"icon":"time","text":"22:13"}'
 
 setup 12h - -
-check '12h: time' '{"icon":"time","text":"10:13"}' time
-check '12h: datetime' '{"icon":"time","text":"14/11 10:13"}' datetime '%d/%m'
+check '12h: time' '{"icon":"time","text":"10:13 PM"}' time
+check '12h: datetime' '{"icon":"time","text":"14/11 10:13 PM"}' datetime '%d/%m'
 check '12h: date unchanged' '{"icon":"","text":"Tue-14/11/23"}' date '%a-%d/%m/%y'
 
 setup fail - -
@@ -76,6 +92,38 @@ check 'quotes, backslash and newline are escaped' '{"icon":"time","text":"say \"
 
 setup 24h '%H<%M> & %%' -
 check 'Pango markup characters are left to the bar' '{"icon":"time","text":"22<13> & %"}' time
+
+# Midnight, noon and afternoon, as the X11 bar shows them.
+clock 1699920120 # 00:02
+setup 12h - -
+check '12h 00:02: time' '{"icon":"time","text":"12:02 AM"}' time
+check '12h 00:02: datetime' '{"icon":"time","text":"14/11 12:02 AM"}' datetime '%d/%m'
+setup 24h - -
+check '24h 00:02: time' '{"icon":"time","text":"00:02"}' time
+check '24h 00:02: datetime' '{"icon":"time","text":"14/11 00:02"}' datetime '%d/%m'
+
+clock 1699963320 # 12:02
+setup 12h - -
+check '12h 12:02: time' '{"icon":"time","text":"12:02 PM"}' time
+check '12h 12:02: datetime' '{"icon":"time","text":"14/11 12:02 PM"}' datetime '%d/%m'
+setup 24h - -
+check '24h 12:02: time' '{"icon":"time","text":"12:02"}' time
+check '24h 12:02: datetime' '{"icon":"time","text":"14/11 12:02"}' datetime '%d/%m'
+
+clock 1699969500 # 13:45
+setup 12h - -
+check '12h 13:45: time' '{"icon":"time","text":"01:45 PM"}' time
+check '12h 13:45: datetime' '{"icon":"time","text":"14/11 01:45 PM"}' datetime '%d/%m'
+setup 24h - -
+check '24h 13:45: time' '{"icon":"time","text":"13:45"}' time
+check '24h 13:45: datetime' '{"icon":"time","text":"14/11 13:45"}' datetime '%d/%m'
+
+clock 1699969500 no-ampm
+setup 12h - -
+check '12h, no AM/PM in the locale: time' '{"icon":"time","text":"01:45"}' time
+check '12h, no AM/PM in the locale: datetime' '{"icon":"time","text":"14/11 01:45"}' datetime '%d/%m'
+setup 12h '%H:%M %p' -
+check 'resource with no AM/PM in the locale: left as is' '{"icon":"time","text":"13:45 "}' time
 
 if [ "$failures" -ne 0 ]; then
     echo "$failures check(s) failed"
