@@ -12,6 +12,7 @@ backlight = [
     "\ue1ac", # brightness_high
 ]
 bat_charging = "\ue1a3" # battery_charging_full
+bat_discharging = "" # none: a discharging battery shows no symbol of its own
 bat_not_available = "\ue1a6" # battery_unknown
 bat = [
     "\ue19c", # battery_alert

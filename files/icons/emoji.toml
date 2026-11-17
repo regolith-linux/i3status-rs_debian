@@ -6,6 +6,7 @@ backlight = [
     "🌑",
 ]
 bat_charging = "🔌"
+bat_discharging = "" # none: a discharging battery shows no symbol of its own
 bat = [
     "🪫",
     "🔋",

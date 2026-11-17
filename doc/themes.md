@@ -173,6 +173,44 @@ These are the available sway colors:
 
 You can see the current values for your bar with `swaymsg -t get_bar_config <bar-name>`.
 
+## Following the Regolith look
+
+In a Regolith session, the theme and the icon set can follow the active look, as the X11 session's bar does:
+
+```toml
+[theme]
+theme = "semi-native"
+regolith_look = true
+[icons]
+icons = "awesome4"
+regolith_look = true
+```
+
+Each time the bar starts (sway starts it again on every reload, `regolith-look set` and `regolith-look refresh` reload, and so does an in-place restart with `SIGUSR2`), it reads the session's `i3xrocks.*` resources from the resource service (as `xrescat` prints them: surrounding blank space and one pair of surrounding double quotes are removed), and lays them over the theme or icon set:
+
+Theme colour | Resource
+-------------|---------
+`icon_fg` | `i3xrocks.label.color`
+`idle_fg`, `info_fg` | `i3xrocks.value.color`
+`good_fg` | `i3xrocks.nominal`
+`warning_fg` | `i3xrocks.warning`
+`critical_fg` | `i3xrocks.critical.color`
+`error_fg` | `i3xrocks.error.color`
+
+Icon | Resource
+-----|---------
+`cpu` | `i3xrocks.label.cpu`
+`memory_mem`, `memory_swap` | `i3xrocks.label.memory`
+`disk_drive` | `i3xrocks.label.disk`
+`volume` | `i3xrocks.label.sound`
+`volume_muted` | `i3xrocks.label.mute`
+`time` | `i3xrocks.label.time`
+`bat` | `i3xrocks.label.battery0` (up to 20%), `battery20` (up to 50%), `battery50` (up to 80%), `battery80` (up to 98%), `battery100`
+`bat_charging` | `i3xrocks.label.up`
+`bat_discharging` | `i3xrocks.label.dn`
+
+Colours may be written `#RGB`, `#RRGGBB` or `#RRGGBBAA`. A resource that is missing, empty or not valid leaves that colour or icon as the theme or icon set has it, and without a session bus or resource service nothing changes; the bar does not wait more than two seconds for an answer. `[theme.overrides]` and `[icons.overrides]` still take precedence over the look. The battery block grades itself like the X11 bar while the theme follows the look; see its documentation.
+
 # Available theme overrides
 
 All `bg` and `fg` overrides are either
@@ -193,6 +231,8 @@ Feel free to take a look at the provided color schemes for reference.
 * `warning_fg`
 * `critical_bg`
 * `critical_fg`
+* `error_fg` (error messages; unset, they take `critical_fg`, and overriding `critical_fg` alone makes them follow it)
+* `icon_fg` (icons; unset or `"none"`, they take their block's colour)
 * `info_bg`
 * `info_fg`
 * `alternating_tint_bg`

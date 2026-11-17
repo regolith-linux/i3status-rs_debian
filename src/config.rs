@@ -118,7 +118,17 @@ impl SharedConfig {
                 .or_error(|| format!("Icon '{icon}' not found"))?,
         );
         record_icon(icon, &produced);
-        Ok(produced)
+        Ok(self.paint_icon(produced))
+    }
+
+    /// An icon as the bar draws it: in the theme's `icon_fg`, if it has one.
+    pub(crate) fn paint_icon(&self, icon: String) -> String {
+        match self.theme.icon_fg.to_hex() {
+            Some(color) if !icon.is_empty() => {
+                format!("<span foreground=\"{color}\">{icon}</span>")
+            }
+            _ => icon,
+        }
     }
 }
 
@@ -156,4 +166,33 @@ where
     let theme_config = ThemeUserConfig::deserialize(deserializer)?;
     let theme = Theme::try_from(theme_config).serde_error()?;
     Ok(Arc::new(theme))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::themes::ThemeInner;
+    use crate::themes::color::{Color, Rgba};
+
+    #[test]
+    fn icons_take_the_icon_colour() {
+        let mut shared = SharedConfig {
+            theme: Arc::new(Theme(ThemeInner::default())),
+            icons: Arc::new(Icons(map! {
+                "cpu" => Icon::from("C"),
+                "bat_discharging" => Icon::from(""),
+            })),
+            icons_format: Arc::new(" {icon} ".into()),
+        };
+        assert_eq!(shared.get_icon("cpu", None).unwrap(), " C ");
+
+        Arc::make_mut(&mut shared.theme).icon_fg = Color::Rgba(Rgba::from_hex(0xaabbccff));
+        assert_eq!(
+            shared.get_icon("cpu", None).unwrap(),
+            "<span foreground=\"#AABBCCFF\"> C </span>"
+        );
+        // Nothing to paint
+        shared.icons_format = Arc::new("{icon}".into());
+        assert_eq!(shared.get_icon("bat_discharging", None).unwrap(), "");
+    }
 }

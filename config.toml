@@ -1,8 +1,16 @@
+# The blocks take their colours and symbols from the active Regolith look,
+# like the X11 session's bar: its i3xrocks.* resources are read each time the
+# bar starts (sway restarts it when the look changes). Whatever the look does
+# not define comes from the theme and icon set named here, which are also what
+# the bar shows when there is no look at all. Entries in [theme.overrides] and
+# [icons.overrides] take precedence over the look.
 [theme]
 theme = "semi-native"
+regolith_look = true
 
 [icons]
 icons = "awesome4"
+regolith_look = true
 
 # The active keyboard layout, updated as soon as it changes, as the
 # keyboard-layout blocklet shows it in the X11 session. A left click opens
@@ -21,6 +29,10 @@ cmd = "regolith-control-center keyboard"
 
 [[block]]
 block = "net"
+# Its icons ("LO" for the loopback) stand in for a reading here, so they keep
+# the reading's colour rather than the look's symbol colour.
+[block.theme_overrides]
+icon_fg = "none"
 
 # CPU usage, also shown by the X11 session's bar
 [[block]]
@@ -45,7 +57,9 @@ format_alt = " $icon_swap $swap_used_percents.eng(w:2) "
 
 [[block]]
 block = "battery"
-format = " $icon\u2009 $percentage "
+# With the look: the symbol and colour follow the percentage as in the X11
+# bar, and a charging or discharging battery shows its direction after it.
+format = " $icon\u2009 $percentage {$direction.pango-str() |}"
 # Hidden while there is no battery, e.g. on a desktop or after UPower stops
 missing_format = ""
 device = "DisplayDevice"
@@ -82,7 +96,7 @@ command = "/usr/libexec/i3status-rs/regolith-bar-time date '%a-%d/%m/%y'"
 json = true
 hide_when_empty = true
 interval = 5
-format = "\uf073 $text.pango-str()"
+format = "^icon_calendar $text.pango-str()"
 [[block.click]]
 button = "left"
 cmd = "regolith-control-center datetime"

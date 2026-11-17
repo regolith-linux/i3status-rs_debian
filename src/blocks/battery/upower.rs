@@ -205,16 +205,19 @@ impl BatteryDevice for Device {
                     Ok((true, capacity, power, state, time_to_full, time_to_empty)) => {
                         let status = match state {
                             1 => BatteryStatus::Charging,
-                            2 | 6 => BatteryStatus::Discharging,
+                            2 => BatteryStatus::Discharging,
                             3 => BatteryStatus::Empty,
                             4 => BatteryStatus::Full,
                             5 => BatteryStatus::NotCharging,
+                            6 => BatteryStatus::PendingDischarge,
                             _ => BatteryStatus::Unknown,
                         };
 
                         let time_remaining = match status {
                             BatteryStatus::Charging => Some(time_to_full as f64),
-                            BatteryStatus::Discharging => Some(time_to_empty as f64),
+                            BatteryStatus::Discharging | BatteryStatus::PendingDischarge => {
+                                Some(time_to_empty as f64)
+                            }
                             _ => None,
                         };
 
