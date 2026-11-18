@@ -1385,6 +1385,7 @@ async fn test_block(
         error_interval: Duration::from_secs(3600),
         geolocator,
         max_retries: Some(0),
+        shared_config: shared.clone(),
     };
 
     let mut futures = futures::stream::FuturesUnordered::new();
@@ -1477,6 +1478,14 @@ fn render_widget(widget: &Widget, shared: &SharedConfig, index: usize) -> LiveVe
             // switch a block between full and short mode; it draws nothing
             // and is not part of what the block rendered.
             let real = |s: &str| (s != SHORT_MODE_SENTINEL).then(|| s.to_string());
+            // The colour the theme gives icons (`icon_fg`) is markup the bar
+            // adds itself; it changes neither glyph nor font, so the text
+            // shown and checked here leaves it out.
+            let strip_paint = |text: String| {
+                icon_strings.iter().fold(text, |text, (_, drawn)| {
+                    text.replace(&shared.paint_icon(drawn.clone()), drawn)
+                })
+            };
             let full: String = segments
                 .iter()
                 .filter_map(|s| real(&s.full_text))
@@ -1488,8 +1497,8 @@ fn render_widget(widget: &Widget, shared: &SharedConfig, index: usize) -> LiveVe
                 .collect::<Vec<_>>()
                 .join("");
             LiveVerdict::Rendered {
-                check_text: format!("{full}{short}"),
-                text: full,
+                check_text: strip_paint(format!("{full}{short}")),
+                text: strip_paint(full),
                 icon_glyphs,
                 icons,
                 icon_strings,

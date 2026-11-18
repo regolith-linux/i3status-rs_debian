@@ -24,6 +24,7 @@ pub mod escape;
 pub mod formatting;
 pub mod geolocator;
 pub mod icons;
+pub mod look;
 mod netlink;
 #[cfg(feature = "pipewire")]
 pub mod pipewire;
@@ -236,6 +237,7 @@ impl Block {
             &self.error_outputs.error
         };
         let mut widget = output.new_widget().with_state(State::Critical);
+        widget.fg = Some(self.shared_config.theme.error_fg());
         let restart_icon =
             restartable.then(|| Value::icon(icons::REFRESH).with_instance(RESTART_BLOCK_BTN));
         widget.set_values(map! {
@@ -318,6 +320,7 @@ impl BarState {
             error_interval: Duration::from_secs(block_config.common.error_interval),
             geolocator: self.config.geolocator.clone(),
             max_retries: block_config.common.max_retries,
+            shared_config: shared_config.clone(),
         };
 
         let error_outputs = block_plan::error_outputs(

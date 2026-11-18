@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::click::MouseButton;
+use crate::config::SharedConfig;
 use crate::errors::*;
 use crate::geolocator::{Geolocator, IPAddressInfo};
 use crate::widget::Widget;
@@ -265,6 +266,8 @@ pub struct CommonApi {
     pub(crate) error_interval: Duration,
     pub(crate) geolocator: Arc<Geolocator>,
     pub(crate) max_retries: Option<u8>,
+    /// The block's theme and icons, overrides applied
+    pub(crate) shared_config: SharedConfig,
 }
 
 impl CommonApi {

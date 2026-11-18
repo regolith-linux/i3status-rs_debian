@@ -18,6 +18,7 @@ backlight = [
     "\ue39b", # nf-weather-moon_full
 ]
 bat_charging = "\U000f0084" # nf-md-battery_charging
+bat_discharging = "" # none: a discharging battery shows no symbol of its own
 bat_not_available = "\U000f0091" # nf-md-battery_unknown
 bat = [
     "\U000f007a", # nf-md-battery_10

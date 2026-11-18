@@ -7,6 +7,7 @@ backlight = [
     "\U0001f311",
 ]
 bat_charging = "\uf1e6"
+bat_discharging = "" # none: a discharging battery shows no symbol of its own
 bat_not_available = "\uf244"
 bat = [
 	"\uf244",

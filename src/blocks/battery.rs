@@ -31,8 +31,25 @@
 //! `time_remaining`  | Time remaining until (dis)charge is complete. Presented only if battery's status is (dis)charging. | Duration | -
 //! `time`       | Time remaining until (dis)charge is complete. Presented only if battery's status is (dis)charging. | String *DEPRECATED* | -
 //! `power`      | Power consumption by the battery or from the power supply when charging | String or Float   | Watts
+//! `direction`  | While the theme follows the Regolith look: the `bat_charging` icon of a charging battery, the `bat_discharging` icon of a discharging one. Pango markup, so use `.pango-str()` | Text | -
 //!
 //! `time` has been deprecated in favor of `time_remaining`.
+//!
+//! # Following the Regolith look
+//!
+//! While the theme follows the session's Regolith look (`regolith_look = true`
+//! in `[theme]`), the battery is graded the way the X11 bar grades it, by the
+//! percentage it shows. `format` (`charging_format` while charging) is used in
+//! every state, with `$icon` the `bat` icon for that percentage and `$direction`
+//! set while charging or discharging, and the colour follows the band rather
+//! than the `info`/`good`/`warning`/`critical` thresholds:
+//!
+//! Percentage | Colour
+//! -----------|-------
+//! 0–20       | critical
+//! 21–50      | the look's error colour (the theme's warning colour if the look has none)
+//! 51–80      | good
+//! 81–100     | idle
 //!
 //! # Examples
 //!
@@ -62,7 +79,8 @@
 //!
 //! # Icons Used
 //! - `bat` (`$icon`, in `format` `full_format` `empty_format` `not_charging_format`, as a progression)
-//! - `bat_charging` (`$icon`, in `charging_format`, as a progression)
+//! - `bat_charging` (`$icon`, in `charging_format`, as a progression; `$direction` following the Regolith look)
+//! - `bat_discharging` (`$direction` following the Regolith look)
 //! - `bat_not_available` (`$icon`, in `missing_format`)
 
 use regex::Regex;
@@ -134,6 +152,13 @@ pub(crate) fn prepare(config: &Config) -> Result<Arc<BlockPlan>> {
         .icon("icon", IconChoices::one(icons::BAT)),
         OutputPlan::new("missing", config.missing_format.with_default(" $icon ")?)
             .icon("icon", IconChoices::one(icons::BAT_NOT_AVAILABLE)),
+        // Following the Regolith look, graded by percentage in every state
+        OutputPlan::new("band", format.clone()).icon("icon", IconChoices::one(icons::BAT)),
+        OutputPlan::new(
+            "band_charging",
+            config.charging_format.with_default_format(&format),
+        )
+        .icon("icon", IconChoices::one(icons::BAT)),
     ])
 }
 
@@ -144,6 +169,9 @@ pub(crate) async fn run(config: &Config, api: &CommonApi, plan: &Arc<BlockPlan>)
     let output_empty = plan.output("empty")?;
     let output_not_charging = plan.output("not_charging")?;
     let output_missing = plan.output("missing")?;
+    let output_band = plan.output("band")?;
+    let output_band_charging = plan.output("band_charging")?;
+    let look = api.shared_config.theme.look;
 
     let dev_name = DeviceName::new(config.device.clone())?;
     let mut device: Box<dyn BatteryDevice + Send + Sync> = match config.driver {
@@ -160,6 +188,49 @@ pub(crate) async fn run(config: &Config, api: &CommonApi, plan: &Arc<BlockPlan>)
 
     loop {
         let mut info = device.get_info().await?;
+
+        if let (Some(info), Some(look)) = (info, look) {
+            let charging = info.status == BatteryStatus::Charging;
+            let output = if charging {
+                &output_band_charging
+            } else {
+                &output_band
+            };
+            let mut widget = output.new_widget();
+            let mut values = info_values(&info);
+            let shown = info.capacity.round().clamp(0.0, 100.0);
+            values.insert(
+                "icon".into(),
+                Value::icon_progression(icons::BAT, shown / 100.0),
+            );
+            let direction = match info.status {
+                BatteryStatus::Charging => Some(icons::BAT_CHARGING),
+                BatteryStatus::Discharging => Some(icons::BAT_DISCHARGING),
+                _ => None,
+            }
+            .and_then(|icon| api.shared_config.icons.get(icon, None))
+            .filter(|symbol| !symbol.is_empty());
+            if let Some(direction) = direction {
+                values.insert("direction".into(), Value::text(direction.into()));
+            }
+            widget.set_values(values);
+            widget.state = match crate::look::battery_band(shown) {
+                0 => State::Critical,
+                1 => {
+                    widget.fg = Some(look.battery_low_fg);
+                    State::Warning
+                }
+                2 => State::Good,
+                _ => State::Idle,
+            };
+            api.set_widget(widget)?;
+
+            select! {
+                update = device.wait_for_change() => update?,
+                _ = api.wait_for_update_request() => (),
+            }
+            continue;
+        }
 
         if let Some(info) = &mut info {
             if info.capacity >= config.full_threshold {
@@ -181,27 +252,7 @@ pub(crate) async fn run(config: &Config, api: &CommonApi, plan: &Arc<BlockPlan>)
                     _ => &output_discharging,
                 };
                 let mut widget = output.new_widget();
-
-                let mut values = map!(
-                    "percentage" => Value::percents(info.capacity)
-                );
-
-                info.power
-                    .map(|p| values.insert("power".into(), Value::watts(p)));
-                info.time_remaining.inspect(|&t| {
-                    map! { @extend values
-                        "time" => Value::text(
-                            format!(
-                                "{}:{:02}",
-                                (t / 3600.) as i32,
-                                (t % 3600. / 60.) as i32
-                            ),
-                        ),
-                        "time_remaining" =>  Value::duration(
-                            Duration::from_secs(t as u64),
-                        ),
-                    }
-                });
+                let mut values = info_values(&info);
 
                 let (icon_name, icon_value, state) = match (info.status, info.capacity) {
                     (BatteryStatus::Empty, _) => (icons::BAT, 0.0, State::Critical),
@@ -252,6 +303,31 @@ pub(crate) async fn run(config: &Config, api: &CommonApi, plan: &Arc<BlockPlan>)
             _ = api.wait_for_update_request() => (),
         }
     }
+}
+
+/// The values every state with a known battery shows, apart from icons.
+fn info_values(info: &BatteryInfo) -> HashMap<Cow<'static, str>, Value> {
+    let mut values = map!(
+        "percentage" => Value::percents(info.capacity)
+    );
+
+    info.power
+        .map(|p| values.insert("power".into(), Value::watts(p)));
+    info.time_remaining.inspect(|&t| {
+        map! { @extend values
+            "time" => Value::text(
+                format!(
+                    "{}:{:02}",
+                    (t / 3600.) as i32,
+                    (t % 3600. / 60.) as i32
+                ),
+            ),
+            "time_remaining" =>  Value::duration(
+                Duration::from_secs(t as u64),
+            ),
+        }
+    });
+    values
 }
 
 #[async_trait]
@@ -309,6 +385,8 @@ enum BatteryStatus {
     Empty,
     Full,
     NotCharging,
+    /// About to discharge (UPower), shown as discharging
+    PendingDischarge,
     #[default]
     Unknown,
 }

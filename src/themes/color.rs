@@ -197,6 +197,19 @@ impl Color {
     pub fn skip_ser(&self) -> bool {
         matches!(self, Self::None | Self::Auto)
     }
+
+    /// The colour as `#RRGGBBAA`, or `None` for `none` and `auto`.
+    pub fn to_hex(&self) -> Option<String> {
+        let rgba = match *self {
+            Self::None | Self::Auto => return None,
+            Self::Rgba(rgba) => rgba,
+            Self::Hsva(hsva) => hsva.into(),
+        };
+        Some(format!(
+            "#{:02X}{:02X}{:02X}{:02X}",
+            rgba.r, rgba.g, rgba.b, rgba.a
+        ))
+    }
 }
 
 impl Add for Color {
@@ -263,12 +276,9 @@ impl Serialize for Color {
     where
         S: Serializer,
     {
-        let format_rgba =
-            |rgba: Rgba| format!("#{:02X}{:02X}{:02X}{:02X}", rgba.r, rgba.g, rgba.b, rgba.a);
-        match *self {
-            Self::None | Self::Auto => serializer.serialize_none(),
-            Self::Rgba(rgba) => serializer.serialize_str(&format_rgba(rgba)),
-            Self::Hsva(hsva) => serializer.serialize_str(&format_rgba(hsva.into())),
+        match self.to_hex() {
+            None => serializer.serialize_none(),
+            Some(hex) => serializer.serialize_str(&hex),
         }
     }
 }

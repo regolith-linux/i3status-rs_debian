@@ -168,6 +168,7 @@ words:
   - rofi
   - rofication
   - RRGGBB
+  - RRGGBBAA
   - rsplit
   - rtattr
   - rtattrs
@@ -201,6 +202,7 @@ words:
   - sysfs
   - tebi
   - tera
+  - trawld
   - tzname
   - tzset
   - udev
@@ -232,6 +234,7 @@ words:
   - XKCD
   - XLFD
   - xrandr
+  - xrescat
   - xresource
   - xresources
   - xrocks

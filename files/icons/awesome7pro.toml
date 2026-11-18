@@ -11,6 +11,7 @@ backlight = [
     "\ue28f", #  https://fontawesome.com/icons/sun-bright
 ]
 bat_charging = "\uf376" #  https://fontawesome.com/icons/battery-bolt
+bat_discharging = "" # none: a discharging battery shows no symbol of its own
 bat_not_available = "\uf377" #  https://fontawesome.com/icons/battery-slash
 bat = [
     "\uf244", #  https://fontawesome.com/icons/battery-empty

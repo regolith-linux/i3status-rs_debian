@@ -3,12 +3,15 @@ use crate::config::SharedConfig;
 use crate::errors::*;
 use crate::formatting::{Format, Fragment, Values};
 use crate::protocol::i3bar_block::I3BarBlock;
+use crate::themes::color::Color;
 use serde::Deserialize;
 use smart_default::SmartDefault;
 
 #[derive(Debug, Clone, Default)]
 pub struct Widget {
     pub state: State,
+    /// Foreground colour to show instead of the one the theme gives `state`
+    pub fg: Option<Color>,
     source: Source,
     values: Values,
     /// The declared output variant this widget renders, when the block has
@@ -167,6 +170,7 @@ impl Widget {
     pub fn get_data(&self, shared_config: &SharedConfig, id: usize) -> Result<Vec<I3BarBlock>> {
         // Create a "template" block
         let (key_bg, key_fg) = shared_config.theme.get_colors(self.state);
+        let key_fg = self.fg.unwrap_or(key_fg);
         let (full, short) = self.source.render(shared_config, &self.values)?;
         let mut template = I3BarBlock {
             instance: format!("{id}:"),
