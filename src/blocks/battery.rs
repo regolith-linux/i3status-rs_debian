@@ -199,7 +199,10 @@ pub(crate) async fn run(config: &Config, api: &CommonApi, plan: &Arc<BlockPlan>)
             let mut widget = output.new_widget();
             let mut values = info_values(&info);
             let shown = info.capacity.round().clamp(0.0, 100.0);
-            values.insert("icon".into(), Value::icon_progression(icons::BAT, shown / 100.0));
+            values.insert(
+                "icon".into(),
+                Value::icon_progression(icons::BAT, shown / 100.0),
+            );
             let direction = match info.status {
                 BatteryStatus::Charging => Some(icons::BAT_CHARGING),
                 BatteryStatus::Discharging => Some(icons::BAT_DISCHARGING),
