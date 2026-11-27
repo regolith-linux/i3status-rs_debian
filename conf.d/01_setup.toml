@@ -1,0 +1,11 @@
+# The default bar of the Wayland session, as fragments: each file holds
+# one block, and the files merge in the order of their names. A file of
+# the same name in the user's fragment directory takes the place of one
+# here: an empty file there removes the block. A `[[block]]` there with
+# one of the `id` values used here changes, moves or (with
+# `remove = true`) removes that block.
+[theme]
+theme = "semi-native"
+
+[icons]
+icons = "awesome4"
