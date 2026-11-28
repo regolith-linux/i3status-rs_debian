@@ -170,6 +170,7 @@ words:
   - rofication
   - RRGGBB
   - rsplit
+  - rssi
   - rtattr
   - rtattrs
   - rtmsg
@@ -196,6 +197,8 @@ words:
   - statvfs
   - stdbuf
   - stefanzweifel
+  - strasse
+  - straße
   - strftime
   - swayipc
   - swaync
