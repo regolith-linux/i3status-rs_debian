@@ -125,7 +125,10 @@ fn is_relevant(msg: &zbus::Message) -> bool {
 
 /// A match rule for `PropertiesChanged` on `interface`, sent either by the
 /// manager object itself or by the objects below `…/ActiveConnection`.
-fn properties_rule(active_connections: bool, interface: &'static str) -> Result<MatchRule<'static>> {
+fn properties_rule(
+    active_connections: bool,
+    interface: &'static str,
+) -> Result<MatchRule<'static>> {
     let builder = MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .interface("org.freedesktop.DBus.Properties")
@@ -141,7 +144,7 @@ fn properties_rule(active_connections: bool, interface: &'static str) -> Result<
         .build())
 }
 
-type PropertyChanges =Pin<Box<dyn Stream<Item = zbus::Result<zbus::Message>> + Send + Sync>>;
+type PropertyChanges = Pin<Box<dyn Stream<Item = zbus::Result<zbus::Message>> + Send + Sync>>;
 
 struct Bus {
     conn: zbus::Connection,
@@ -673,13 +676,23 @@ mod tests {
         assert_eq!(most_recent(vec![profile("tun", 7, "tun0")]), None);
     }
 
-    fn properties_changed(interface: &str, changed: &[&str], invalidated: &[&str]) -> zbus::Message {
-        let changed: HashMap<&str, Value<'_>> =
-            changed.iter().map(|key| (*key, Value::from(1u32))).collect();
-        zbus::Message::signal(NM_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged")
-            .unwrap()
-            .build(&(interface, changed, invalidated.to_vec()))
-            .unwrap()
+    fn properties_changed(
+        interface: &str,
+        changed: &[&str],
+        invalidated: &[&str],
+    ) -> zbus::Message {
+        let changed: HashMap<&str, Value<'_>> = changed
+            .iter()
+            .map(|key| (*key, Value::from(1u32)))
+            .collect();
+        zbus::Message::signal(
+            NM_PATH,
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+        )
+        .unwrap()
+        .build(&(interface, changed, invalidated.to_vec()))
+        .unwrap()
     }
 
     #[test]
