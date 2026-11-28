@@ -42,7 +42,7 @@ impl TailscaleDriver {
 
 #[async_trait]
 impl Driver for TailscaleDriver {
-    async fn get_status(&self) -> Result<Status> {
+    async fn get_status(&mut self) -> Result<Status> {
         let cmd = Command::new("tailscale")
             .args(["status", "--json"])
             .output()
@@ -68,6 +68,7 @@ impl Driver for TailscaleDriver {
                 country: None,
                 country_flag: None,
                 profile,
+                name: None,
             }),
             "Stopped" => Ok(Status::Disconnected { profile }),
             "NeedsLogin" => Ok(Status::Error(Some("Needs login".to_string()))),
@@ -75,7 +76,7 @@ impl Driver for TailscaleDriver {
         }
     }
 
-    async fn toggle_connection(&self, status: &Status) -> Result<()> {
+    async fn toggle_connection(&mut self, status: &Status) -> Result<()> {
         match status {
             Status::Connected { .. } => Self::run_network_command("down").await?,
             Status::Disconnected { .. } => Self::run_network_command("up").await?,

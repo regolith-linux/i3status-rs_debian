@@ -41,7 +41,7 @@ impl NordVpnDriver {
 
 #[async_trait]
 impl Driver for NordVpnDriver {
-    async fn get_status(&self) -> Result<Status> {
+    async fn get_status(&mut self) -> Result<Status> {
         let stdout = Command::new("nordvpn")
             .args(["status"])
             .output()
@@ -77,12 +77,13 @@ impl Driver for NordVpnDriver {
                 country,
                 country_flag,
                 profile: None,
+                name: None,
             });
         }
         Ok(Status::Error(None))
     }
 
-    async fn toggle_connection(&self, status: &Status) -> Result<()> {
+    async fn toggle_connection(&mut self, status: &Status) -> Result<()> {
         match status {
             Status::Connected { .. } => Self::run_network_command("disconnect").await?,
             Status::Disconnected { .. } => Self::run_network_command("connect").await?,

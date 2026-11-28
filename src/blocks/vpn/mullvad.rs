@@ -40,7 +40,7 @@ impl MullvadDriver {
 
 #[async_trait]
 impl Driver for MullvadDriver {
-    async fn get_status(&self) -> Result<Status> {
+    async fn get_status(&mut self) -> Result<Status> {
         let stdout = Command::new("mullvad")
             .args(["status", "-j"])
             .output()
@@ -78,9 +78,13 @@ impl Driver for MullvadDriver {
                     country: country_code,
                     country_flag,
                     profile: None,
+                    name: None,
                 })
             }
-            MullvadCliStatus::Connecting => Ok(Status::Connecting { profile: None }),
+            MullvadCliStatus::Connecting => Ok(Status::Connecting {
+                profile: None,
+                name: None,
+            }),
             MullvadCliStatus::Error { details } => {
                 let error = details.and_then(|details| details.cause).and_then(|cause| {
                     if let Some(reason) = cause.reason
@@ -97,7 +101,7 @@ impl Driver for MullvadDriver {
         }
     }
 
-    async fn toggle_connection(&self, status: &Status) -> Result<()> {
+    async fn toggle_connection(&mut self, status: &Status) -> Result<()> {
         match status {
             Status::Connected { .. } | Status::Connecting { .. } => {
                 Self::run_network_command("disconnect").await?;

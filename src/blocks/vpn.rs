@@ -6,8 +6,8 @@
 //!
 //! Key | Values | Default
 //! ----|--------|--------
-//! `driver` | Which vpn should be used . Available drivers are: `"nordvpn"`, `"mullvad"`, `"tailscale"` | `"nordvpn"`
-//! `interval` | Update interval in seconds. | `10`
+//! `driver` | Which vpn should be used . Available drivers are: `"nordvpn"`, `"mullvad"`, `"tailscale"`, `"warp"`, `"networkmanager"` | `"nordvpn"`
+//! `interval` | Update interval in seconds. Not used by the `networkmanager` driver, which follows NetworkManager's signals instead. | `10`
 //! `format_connected` | A string to customise the output in case the network is connected. See below for available placeholders. | `" VPN: $icon "`
 //! `format_disconnected` | A string to customise the output in case the network is disconnected. See below for available placeholders. | `" VPN: $icon "`
 //! `format_connecting` | A string to customise the output in case the network is in a connecting state. See below for available placeholders. | `" VPN: $icon "`
@@ -20,6 +20,7 @@
 //! `country`   | Country currently connected to                            | Text   | -
 //! `flag`      | Country specific flag (depends on a font supporting them) | Text   | -
 //! `profile`   | Currently selected profile configuration (tailnet)        | Text   | -
+//! `name`      | Name of the shown connection (`networkmanager` only)      | Text   | -
 //! `error`     | Error message if any                                      | Text   | -
 //!
 //! Action    | Default button | Description
@@ -45,7 +46,19 @@
 //! ## Cloudflare WARP
 //! Behind the scenes the WARP driver uses the `warp-cli` command line binary. Just ensure the binary is executable without root privileges.
 //!
-//! # Example
+//! ## NetworkManager
+//! The networkmanager driver talks to NetworkManager over the system bus and updates as soon as
+//! NetworkManager reports a change; it does not poll, so `interval` has no effect. Of the active
+//! connections, in NetworkManager's order, it shows the first one of type `vpn`, otherwise the first
+//! of type `wireguard`, otherwise the first `tun` or `tap` connection whose device is not a port of
+//! another device (such as a virtual machine's tap device in a bridge). Connections that are going
+//! down are ignored. `$name` is the connection's name, available in `format_connected` and
+//! `format_connecting`. When NetworkManager is not running the block shows `format_disconnected`.
+//!
+//! Toggling deactivates the shown connection (cancelling it if it is still connecting), or, when
+//! disconnected, activates the saved `vpn` or `wireguard` connection that was used most recently.
+//!
+//! # Examples
 //!
 //! Shows the current vpn network state:
 //!
@@ -59,6 +72,16 @@
 //! format_connecting = "VPN: $icon "
 //! state_connected = "good"
 //! state_disconnected = "warning"
+//! ```
+//!
+//! Shows the VPN NetworkManager knows about, and nothing when there is none:
+//!
+//! ```toml
+//! [[block]]
+//! block = "vpn"
+//! driver = "networkmanager"
+//! format_connected = " $icon $name "
+//! format_disconnected = ""
 //! ```
 //!
 //! Possible values for `state_connected` and `state_disconnected`:
@@ -84,6 +107,8 @@
 
 mod mullvad;
 use mullvad::MullvadDriver;
+mod networkmanager;
+use networkmanager::NetworkManagerDriver;
 mod nordvpn;
 use nordvpn::NordVpnDriver;
 mod tailscale;
@@ -97,6 +122,8 @@ use super::prelude::*;
 #[serde(rename_all = "snake_case")]
 pub enum DriverType {
     Mullvad,
+    #[serde(rename = "networkmanager")]
+    NetworkManager,
     #[default]
     Nordvpn,
     Tailscale,
@@ -121,9 +148,11 @@ enum Status {
         country: Option<String>,
         country_flag: Option<String>,
         profile: Option<String>,
+        name: Option<String>,
     },
     Connecting {
         profile: Option<String>,
+        name: Option<String>,
     },
     Disconnected {
         profile: Option<String>,
@@ -133,10 +162,10 @@ enum Status {
 
 impl DriverType {
     /// Whether the driver's `get_status` can ever report `Connecting`.
-    /// Only mullvad has an intermediate connecting state; the other CLIs
-    /// report connected, disconnected, or an error.
+    /// Only mullvad and NetworkManager have an intermediate connecting
+    /// state; the other CLIs report connected, disconnected, or an error.
     fn can_report_connecting(&self) -> bool {
-        matches!(self, DriverType::Mullvad)
+        matches!(self, DriverType::Mullvad | DriverType::NetworkManager)
     }
 }
 
@@ -185,8 +214,9 @@ pub(crate) async fn run(config: &Config, api: &CommonApi, plan: &Arc<BlockPlan>)
     };
     let output_error = plan.output("error")?;
 
-    let driver: Box<dyn Driver> = match config.driver {
+    let mut driver: Box<dyn Driver> = match config.driver {
         DriverType::Mullvad => Box::new(MullvadDriver::new().await),
+        DriverType::NetworkManager => Box::new(NetworkManagerDriver::new().await),
         DriverType::Nordvpn => Box::new(NordVpnDriver::new().await),
         DriverType::Tailscale => Box::new(TailscaleDriver::new().await),
         DriverType::Warp => Box::new(WarpDriver::new().await),
@@ -214,12 +244,14 @@ pub(crate) async fn run(config: &Config, api: &CommonApi, plan: &Arc<BlockPlan>)
                 country,
                 country_flag,
                 profile,
+                name,
             } => {
                 widget.set_values(map!(
                         "icon" => icon.clone(),
                         [if let Some(country) = country] "country" => Value::text(country.into()),
                         [if let Some(flag) = country_flag] "flag" => Value::text(flag.into()),
                         [if let Some(profile) = profile] "profile" => Value::text(profile.into()),
+                        [if let Some(name) = name] "name" => Value::text(name.into()),
                 ));
                 config.state_connected
             }
@@ -230,10 +262,11 @@ pub(crate) async fn run(config: &Config, api: &CommonApi, plan: &Arc<BlockPlan>)
                 });
                 config.state_disconnected
             }
-            Status::Connecting { profile } => {
+            Status::Connecting { profile, name } => {
                 widget.set_values(map!(
                         "icon" => icon.clone(),
                         [if let Some(profile) = profile] "profile" => Value::text(profile.into()),
+                        [if let Some(name) = name] "name" => Value::text(name.into()),
                 ));
                 State::Info
             }
@@ -248,21 +281,31 @@ pub(crate) async fn run(config: &Config, api: &CommonApi, plan: &Arc<BlockPlan>)
 
         api.set_widget(widget)?;
 
-        select! {
-            _ = sleep(config.interval.0) => (),
-            _ = api.wait_for_update_request() => (),
-            Some(action) = actions.recv() => match action.as_ref() {
-                "toggle" => driver.toggle_connection(&status).await?,
-                _ => (),
+        let action = select! {
+            res = driver.wait_for_change(config.interval) => {
+                res?;
+                None
             }
+            _ = api.wait_for_update_request() => None,
+            Some(action) = actions.recv() => Some(action),
+        };
+        if action.as_deref() == Some("toggle") {
+            driver.toggle_connection(&status).await?;
         }
     }
 }
 
 #[async_trait]
-trait Driver {
-    async fn get_status(&self) -> Result<Status>;
-    async fn toggle_connection(&self, status: &Status) -> Result<()>;
+trait Driver: Send {
+    async fn get_status(&mut self) -> Result<Status>;
+    async fn toggle_connection(&mut self, status: &Status) -> Result<()>;
+
+    /// Wait until the status may have changed. Drivers that cannot be told
+    /// about changes check again every `interval`.
+    async fn wait_for_change(&mut self, interval: Seconds) -> Result<()> {
+        sleep(interval.0).await;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
